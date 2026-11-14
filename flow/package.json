@@ -1,0 +1,9 @@
+{
+  "name": "coi-flow",
+  "private": true,
+  "type": "module",
+  "description": "Google Flow image generation for abpipe episodes. See flow/gen.mjs.",
+  "dependencies": {
+    "playwright-core": "^1.64.1"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "style": "Test style",
+  "characters": {
+    "mara_quill": {
+      "display": "Mara Quill", "hi": "मारा क्विल", "tier": 1, "minor": false,
+      "role": "A fortune teller on the quay.", "first_chapter": 1,
+      "look": "slim woman with silver hair and grey eyes, in a long green shawl, holding a deck of cards",
+      "props": [],
+      "variants": {"base": {"flow_name": "Mara Quill", "chapters": "1-", "look": null, "reason": "base", "flow_made": true, "ref_version": 1}},
+      "legacy": {"appearance": "slim woman with silver hair and grey eyes, in a long green shawl, holding a deck of cards",
+                 "chapters": "1-5", "outfits": {"4-5 night ferry": "dark oilskin coat"}, "flow_name": "Mara Quill"}
+    },
+    "joss_hale": {
+      "display": "Joss Hale", "hi": "जॉस हेल", "tier": 2, "minor": false,
+      "role": "A fruit seller.", "first_chapter": 1,
+      "look": "broad man in his forties with a short beard and a flat cap",
+      "props": ["apple crate"],
+      "variants": {"base": {"flow_name": "Joss Hale", "chapters": "1-", "look": null, "reason": "base", "flow_made": true, "ref_version": 2},
+                   "old_joss": {"flow_name": "Joss Hale - Older", "label": "twenty years later", "chapters": "5", "reason": "age", "look": "grey-haired man, stooped", "flow_made": false, "ref_version": 2}}
+    }
+  },
+  "content_flags": {}
+}

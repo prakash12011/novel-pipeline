@@ -1,0 +1,16 @@
+{
+  "_README": "Invented fixture cast.",
+  "style": "Test style",
+  "characters": {
+    "mira_vale": {"display": "Mira Vale", "flow_name": "Mira Vale", "hi": "मीरा वेल", "tier": 1, "minor": false,
+      "chapters": "4-6,11,16-17", "appearance": "tall woman with red hair and green eyes, wearing a long grey coat and silver earrings, holding a brass lantern",
+      "role": "A traveller.", "invented": "", "outfits": {"25-26 inn": "blue dress"}, "flow_made": true},
+    "tom_reed": {"display": "Tom Reed", "flow_name": null, "hi": "टॉम रीड", "tier": 3, "minor": true,
+      "chapters": "56", "appearance": "short farmer with a round face", "role": "A farmer.", "invented": "x", "added_episode": 3},
+    "old_gil": {"display": "Old Gil", "flow_name": "Old Gil", "hi": "ओल्ड गिल", "tier": 2, "minor": false,
+      "chapters": "9,2-3", "appearance": "elderly man with a white beard", "role": "A keeper.", "invented": ""},
+    "grey_tower": {"display": "Grey Tower", "flow_name": "Grey Tower", "hi": "", "tier": 2, "minor": false,
+      "chapters": "", "appearance": "a tall stone tower above the fog", "role": "A place.", "invented": "", "flow_made": true}
+  },
+  "content_flags": {"3": "keep it clean"}
+}

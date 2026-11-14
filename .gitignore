@@ -1,0 +1,14 @@
+secrets.env
+.env
+.env.*
+!secrets.env.example
+*.token
+access_token*
+HF_TOKEN*
+kaggle.json
+.kaggle-profiles.json
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/

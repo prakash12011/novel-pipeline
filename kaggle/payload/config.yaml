@@ -1,0 +1,218 @@
+# Two profiles. Kaggle does the real work; local is the CPU fallback.
+
+paths:
+  # Kaggle: /kaggle/working/audiobook   Local: ./workspace
+  root: ./workspace
+  glossary: ./glossary.json
+
+translate:
+  # hf_offline -> Kaggle GPU, plain transformers + bitsandbytes 4-bit.
+  #               vLLM was tried first and abandoned: it hard-rejects
+  #               float16 for Gemma3 (sarvam-translate's architecture),
+  #               T4 has no bfloat16 hardware, dense float32 needs ~16GB
+  #               (too much for one T4), and tensor_parallel_size=2 hits a
+  #               documented vLLM bug where Gemma3's tied embedding/lm_head
+  #               isn't sharded (vllm-project/vllm#45719) so it doesn't
+  #               actually fit split across two T4s either. Plain
+  #               transformers has none of these architecture-specific
+  #               guards and 4-bit quantization fits comfortably on one T4.
+  # openai     -> local llama-server (CPU), slow but works.
+  backend: hf_offline
+  model: sarvamai/sarvam-translate
+  base_url: http://127.0.0.1:8000/v1   # only used by the openai backend
+  temperature: 0.05
+  # 4bit = bitsandbytes nf4, ~2GB, but dequantises every weight on every
+  #        forward pass, which costs throughput.
+  # fp16 = ~8GB, still fits a 15GB T4, no dequant overhead. Gemma3 has
+  #        known fp16 instability, so check the Hindi before trusting it.
+  precision: 4bit
+  # Chapters translated in lockstep so their blocks batch together. Blocks
+  # within a chapter stay sequential (rolling context); this batches across
+  # chapters. 1 = old sequential behaviour.
+  batch_chapters: 8
+  # ~700 English words is ~1000 tokens in, ~1600 tokens of Hindi out.
+  words_per_block: 700
+  # Trailing chars of the previous block passed as context. This is what
+  # stops pronouns and honorifics drifting between blocks.
+  context_chars: 400
+  # devanagari = full Hindi. Produces Sanskritised vocabulary (अद्वितीय,
+  #              प्रक्षेपण) that reads as formal/literary, not spoken.
+  # codemixed  = keep common English nouns in Latin script. Risky for TTS:
+  #              IndicF5 is trained on Indic scripts and mispronounces Latin.
+  # spoken     = casual everyday Hindi, English loanwords kept but spelled in
+  #              Devanagari (यूनीक, प्रोजेक्शन). Same sound to a listener as
+  #              codemixed, but safe for the narrator. Use this one.
+  style: spoken
+
+tts:
+  # indicf5 -> Kaggle GPU. Good quality, unusable on CPU.
+  # maya2   -> GPU, built-in voices. On trial, see the maya2 block below.
+  # kokoro  -> CPU fallback. ~2-4x realtime on a Ryzen 3, grade-C Hindi voice.
+  backend: indicf5
+
+  indicf5:
+    model_id: ai4bharat/IndicF5
+    # Path to the python interpreter of a separate venv with the old pinned
+    # stack IndicF5 needs (see abpipe/indicf5_worker.py). null = run in this
+    # process's own environment, which only works if that env happens to
+    # already have the old stack - not the case on Kaggle. Set by
+    # kaggle_daily.ipynb once it builds the venv.
+    venv_python: null
+    # Pin ONE reference clip for the whole book. Changing it mid-run means
+    # your narrator's voice changes between chapters.
+    ref_audio: ./ref/narrator.wav
+    ref_text: "मिरर वर्ल्ड के अंधेरे और नीचे फैले शून्य के ऊपर, अनगिनत चमकीले तारे साफ़ रोशनी की किरणें बिखेर रहे थे। ये किरणें एक स्तंभ में बदल गईं।"
+    sample_rate: 24000
+    # fp32 | fp16. fp16 uses autocast, so fp32 master weights are kept
+    # and torch picks per-op precision - ops unstable in half (the
+    # vocoder especially) stay fp32. Never bf16: the T4 is Turing and
+    # has no bf16 units. Change this ONLY between measured runs so the
+    # effect stays attributable.
+    precision: fp32
+
+  maya2:
+    model_id: maya-research/maya2-native
+    # Path to the python of a separate venv: maya3 pins its own torch and
+    # transformers. Set by kaggle_maya2_trial.ipynb once it builds the venv.
+    venv_python: null
+    # A built-in voice, so no ref_audio. Male, Hindi-trained, described by Maya
+    # as an "adult, steady narrator". Vasant is the "mature" equivalent.
+    # Changing it between chapters changes the narrator, as with ref_audio.
+    voice: Anirban
+    lang: hi
+    sample_rate: 24000
+    # 1 seat = ~9.2 GB peak. Chapters are narrated one chunk at a time, so more
+    # seats would only spend VRAM.
+    max_seats: 1
+
+  kokoro:
+    voice: hm_omega        # hf_alpha, hf_beta, hm_omega, hm_psi
+    lang_code: h
+    sample_rate: 24000
+
+  # english -> digits are narrated as English number words spelled in
+  #            Devanagari: सीक्वेंस 7 -> सीक्वेंस सेवन, 0-01 -> जीरो-जीरो वन.
+  #            IndicF5 has no reading for a bare digit and makes a noise
+  #            instead. See abpipe/spoken_numbers.py.
+  # off     -> digits passed through untouched (the old behaviour).
+  numbers: english
+
+  # F5 degrades on long inputs; keep chunks short.
+  chars_per_chunk: 300
+  paragraph_gap_ms: 450
+
+output:
+  bitrate: 64k
+  channels: 1
+
+# Visual layer. Reference portraits (phase 2) and scene images (phase 3) come
+# from ONE pipeline, deliberately: an IP-Adapter reference painted by a
+# different model carries the character across but not the look, giving a
+# consistent person in an inconsistent style.
+images:
+  # ---- the rig: shared by every base model ----
+  # IP-Adapter is what fixes a character's identity across images; prompting
+  # alone does not. The plus-face variant is the one trained for faces.
+  ip_adapter_repo: h94/IP-Adapter
+  ip_adapter_subfolder: sdxl_models
+  ip_adapter_weight: ip-adapter-plus-face_sdxl_vit-h.bin
+  # ...and _vit-h means it wants the ViT-H image encoder, NOT the SDXL one
+  # sitting next to it in the same repo. Pairing the wrong encoder produces
+  # good-looking images with no identity transfer and raises nothing.
+  image_encoder_subfolder: models/image_encoder
+  # 0 = ignore the reference, 1 = copy it. Above ~0.8 the reference's pose and
+  # framing bleed in too and every scene looks like the portrait it came from.
+  ip_adapter_scale: 0.6
+  # Reference portraits are square; scenes are 16:9 for the video. Both are
+  # SDXL-native buckets - off-bucket sizes give duplicated limbs and heads.
+  # Animagine is SDXL-architecture, so the same buckets apply.
+  ref_size: [1024, 1024]
+  scene_size: [1344, 768]
+  # Candidates per character in phase 2. Fixed prompt, varying seed; you pick
+  # one and it becomes the character forever.
+  ref_candidates: 8
+
+  default_model: sdxl
+  # Which model painted the flat bible/refs/<slug>.png portraits. For that
+  # profile they are native; for any other they are a cross-model borrow and
+  # generate_scenes says so out loud. See images._ref_path.
+  shared_refs_profile: sdxl
+
+  # ---- base models ----
+  # Everything the base model changes lives here. Switching profile must never
+  # mean editing code.
+  models:
+    sdxl:
+      base_model: stabilityai/stable-diffusion-xl-base-1.0
+      # SDXL base publishes SEPARATE fp16 weight files and wants this.
+      variant: fp16
+      steps: 30
+      guidance: 6.0
+      # Style leads for SDXL: this is how the 23 approved portraits in
+      # bible/refs/ were rendered, and a reference and the scenes around it
+      # have to be prompted the same way or the look drifts between them.
+      style_position: first
+      # Kept SHORT deliberately. CLIP truncates at 77 tokens and this prefix is
+      # charged against every prompt; the long version cost 32 and left too
+      # little for the character, which was then silently dropped. See
+      # images.describe.
+      style_prefix: >-
+        high-end semi-realistic anime illustration, gothic dark fantasy,
+        Victorian steampunk, warm amber and brown palette, soft cinematic
+        lighting
+      quality_suffix: ""
+      # NOTE: "anime" is deliberately NOT in the negatives - it was, and it
+      # directly contradicted the style prefix above, which asks for a
+      # semi-realistic anime aesthetic. The two would have fought each other on
+      # every image. What is excluded instead is the CHEAP end of that look:
+      # flat cel shading, chibi proportions, oversaturation.
+      negative_prompt: >-
+        photograph, 3d render, flat cel shading, chibi, oversaturated, text,
+        watermark, signature, frame, border, deformed hands, extra fingers
+
+    animagine:
+      base_model: cagliostrolab/animagine-xl-4.0
+      # NO fp16 variant: the repo is ALREADY stored in fp16 and publishes no
+      # separate variant files, so asking for one raises at load. null, not
+      # "fp16" - this is the single most likely way this profile breaks.
+      variant: null
+      # The model card asks for Euler Ancestral.
+      scheduler: euler_a
+      # Card recommends 25-28 steps and CFG 4-7 (5 preferred). Lower than the
+      # SDXL profile on both, so it is also slightly faster per image.
+      steps: 28
+      guidance: 5.0
+      # Animagine is TAG-trained against an ordered template: subject tags
+      # lead, quality tags close. Natural-language prompts are documented as
+      # "may not be effective", and leading with a style block would bury the
+      # 1girl/1boy count tag the template opens with.
+      style_position: last
+      style_prefix: >-
+        dark fantasy, gothic, victorian, steampunk, warm colors,
+        cinematic lighting, detailed background
+      # Reference portraits only. "detailed background" above lands AFTER the
+      # "plain grey background" framing generate_refs prepends, and wins - the
+      # first Animagine portraits came back with ornate frames and mist, which
+      # is the opposite of what IP-Adapter needs to read a face. Scenes still
+      # get the full style; portraits get a backdrop that stays out of the way.
+      ref_style_prefix: >-
+        dark fantasy, gothic, victorian, warm colors, soft lighting,
+        simple background
+      # Quality tags belong at the END for this model, not the front.
+      quality_suffix: masterpiece, high score, great score, absurdres
+      negative_prompt: >-
+        lowres, bad anatomy, bad hands, text, error, missing finger,
+        extra digits, fewer digits, cropped, worst quality, low quality,
+        low score, bad score, average score, signature, watermark, username,
+        blurry
+
+run:
+  # Stop the batch after this many TTS failures in a row. One bad
+  # chapter is bad luck; two in a row means something systematic,
+  # and continuing just spends the rest of the GPU session on it.
+  max_consecutive_failures: 2
+  # 40 every third day beats 15 daily: same supply, fewer Kaggle commits.
+  chapters_per_batch: 40
+  # Only set if you ever run two machines at once.
+  worker: null
+  workers_total: 1

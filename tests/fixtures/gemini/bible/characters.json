@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "style": "Invented test style",
+  "characters": {
+    "maren_vale": {
+      "display": "Maren Vale", "hi": "मैरेन वेल", "tier": 1, "minor": false,
+      "role": "A lamplighter on the quay.", "first_chapter": 1,
+      "look": "tall woman in her thirties, short dark hair, grey eyes, a long blue wool coat",
+      "props": ["lantern"],
+      "variants": {
+        "base": {"flow_name": "Maren Vale", "chapters": "1-", "look": null, "reason": "base", "flow_made": true, "ref_version": 2},
+        "storm_coat": {"flow_name": "Maren Vale - Storm Coat", "label": "storm coat", "chapters": "2", "reason": "outfit",
+                       "look": "tall woman in her thirties, short dark hair, grey eyes, a heavy yellow oilskin coat",
+                       "flow_made": false, "ref_version": 2}
+      }
+    },
+    "tobias_reed": {
+      "display": "Tobias Reed", "hi": "टोबायस रीड", "tier": 2, "minor": false,
+      "role": "A young net mender.", "first_chapter": 1,
+      "look": "lean young man, curly red hair, freckles, a patched brown jacket",
+      "props": ["fishing net"],
+      "variants": {
+        "base": {"flow_name": "Tobias Reed", "chapters": "1-", "look": null, "reason": "base", "flow_made": true, "ref_version": 2}
+      }
+    },
+    "old_harl": {
+      "display": "Old Harl", "hi": "बूढ़ा हार्ल", "tier": 3, "minor": false,
+      "role": "A retired boatman.", "first_chapter": 1,
+      "look": "stooped old man, white beard, weathered face, a faded green sweater",
+      "props": [],
+      "variants": {
+        "base": {"flow_name": null, "chapters": "1-", "look": null, "reason": "base", "flow_made": false, "ref_version": 2}
+      }
+    }
+  },
+  "content_flags": {}
+}

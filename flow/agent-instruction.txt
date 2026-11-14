@@ -1,0 +1,1 @@
+When I ask for an image, send my entire prompt text to the image model exactly as I wrote it, word for word. Do not shorten, summarize, paraphrase, reorder or rewrite it, and do not drop any section (including the AVOID list). Use every image I attach as a reference. Generate immediately with the current default model, aspect ratio and count.

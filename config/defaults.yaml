@@ -1,0 +1,41 @@
+channel: {name: "Manga and Novel"}
+book: {title: null, author: null, slug: null, series_label: null, chapters_per_episode: 10, volumes: []}
+tts: {engine: maya2, model: maya-research/maya2-native, voice: Anirban, kaggle_profile: null, bitrate: 128k, poll_minutes: 10}
+images:
+  flow_project: null
+  flow_model: "Nano Banana Pro"
+  allow_agent: false
+  paced_seconds: 7.0
+  max_seconds: 7.5
+  chars_per_second: 15.3
+  max_characters: 4
+  chapters_per_day: 3
+  max_per_run: 200
+  batch: 1
+  batch_pause: 45
+  pause: 3
+  chapter_pause: 300
+  rest_every: 50
+  rest: 120
+  wall_cooldown_hours: 12
+  quality: 2K
+  alert_repeat_seconds: 30
+video:
+  fps: 24
+  logo: {enabled: false, file: assets/logo.png, position: top-left, margin: 26, opacity: 1.0, width: null}
+  disclaimer: {enabled: true, seconds: 2.0, heading: "COPYRIGHT & AI DISCLAIMER", text: null}
+  subscribe:
+    voiced: {placement: start-except-first-episode}
+    silent: {every_chapters: 5, seconds: 5}
+    silent_after: null   # per chapter only: true forces a silent card after it, false suppresses one
+    card_text: null      # null = the generic card (episode_extras.CARD_LINES); else 4 lines: heading, button, reactions, tagline
+    spoken_lines: []     # empty = the generic message (episode_extras.SPOKEN)
+  captions: {enabled: true, font_file: assets/fonts/NotoSans-SemiBold.ttf, font_name: "Noto Sans SemiBold", size: 38, max_line: 84}
+  title_font: assets/fonts/PlayfairDisplay.ttf
+  disclaimer_font: assets/fonts/NotoSans-Regular.ttf
+  disclaimer_font_bold: assets/fonts/NotoSans-SemiBold.ttf
+  hd: {enabled: auto}
+gemini: {api_model: gemini-3.5-flash-lite}
+qa: {reviewer: claude, fallback: gemini, parallel: 3, omission_ratio: 0.45}
+publish: {title_template: null, description_template: null, tags: [], hashtags: [], playlist_url: null, category: Entertainment, research_seeds: [], ai: claude}
+thumbnail: {font: assets/fonts/Anton-Regular.ttf, art: null, focus: null}

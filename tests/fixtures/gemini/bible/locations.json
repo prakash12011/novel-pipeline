@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "locations": {
+    "harbour_quay": {
+      "name": "Harbour Quay", "kind": "exterior", "chapters": "1-2",
+      "block": "A long stone quay curving around a small grey harbour. Rowing boats tied to iron rings along the edge, stacks of lobster pots, coils of rope, a row of tall iron lamp posts, a squat bell tower at the far end and low whitewashed houses with slate roofs behind.",
+      "default_light": "pale morning light", "flow_name": null, "flow_made": false
+    },
+    "net_loft": {
+      "name": "Net Loft", "kind": "interior", "chapters": "1-2",
+      "block": "A long attic room above the boat shed. Bare wooden beams, nets hung from hooks along both walls, a workbench under a round window, wooden floats in baskets, a narrow ladder in the floor and one oil lamp on a chain above the bench.",
+      "default_light": "warm lamp light", "flow_name": null, "flow_made": false
+    }
+  }
+}

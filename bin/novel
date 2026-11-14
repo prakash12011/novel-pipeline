@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Git Bash wrapper for the novel CLI. Finds the repo root from this file's location.
+set -e
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+if command -v cygpath >/dev/null 2>&1; then
+  repo_root_win="$(cygpath -w "$repo_root")"
+else
+  repo_root_win="$repo_root"
+fi
+export PYTHONPATH="$repo_root_win${PYTHONPATH:+;$PYTHONPATH}"
+exec py -X utf8 -m novel "$@"
