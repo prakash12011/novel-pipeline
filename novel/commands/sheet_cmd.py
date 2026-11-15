@@ -53,6 +53,12 @@ def _used_text(stem: Path) -> str:
     return " · ".join(parts)
 
 
+def _setting(g: dict, loc: dict) -> str:
+    """`indoor · night` for a group heading (an older group without `where` shows the location's kind)."""
+    where = g.get("where") or {"interior": "indoor", "exterior": "outdoor"}.get(str(loc.get("kind") or ""), "")
+    return " · ".join(x for x in (where, str(g.get("time", ""))) if x)
+
+
 def build_v2(ep_root: Path, n: int, chars_doc: dict, locs_doc: dict, out_dir: Path) -> str:
     from novel.stages import episode_scenes as S
     doc = json.loads(S.scenes_path(ep_root, n).read_text(encoding="utf-8"))
@@ -70,7 +76,7 @@ def build_v2(ep_root: Path, n: int, chars_doc: dict, locs_doc: dict, out_dir: Pa
                 body.append("</main>")
             loc = locs.get(g.get("loc"), {})
             body.append(f'<h2>Group {html.escape(str(gid))} · {html.escape(str(loc.get("name") or g.get("loc")))}'
-                        f' · {html.escape(str(g.get("time", "")))}</h2>'
+                        f' · {html.escape(_setting(g, loc))}</h2>'
                         f'<p class="stage">{html.escape(str(g.get("light", "")))} — staging: '
                         f'{html.escape(str(g.get("staging", "")))}</p><main>')
             current = gid
@@ -83,6 +89,7 @@ def build_v2(ep_root: Path, n: int, chars_doc: dict, locs_doc: dict, out_dir: Pa
         cast = "<br>".join(
             f'{html.escape(str((chars.get(c["key"]) or {}).get("display") or c["key"]))}'
             f'{"" if (c.get("var") or "base") == "base" else " [" + html.escape(c["var"]) + "]"}: '
+            f'{html.escape(str(c.get("position", "")) + "; " if c.get("position") else "")}'
             f'{html.escape(str(c.get("pose", "")))}; hands: {html.escape(str(c.get("hands", "")))}'
             for c in s.get("cast", [])) or "no named characters"
         others = f'<br>others: {html.escape(str(s["others"]))}' if s.get("others") else ""

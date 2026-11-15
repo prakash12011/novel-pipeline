@@ -195,17 +195,8 @@ def fix_command(ep_root: Path, n: int) -> str:
 # ------------------------------------------------------------------ gemini
 
 class CaptionGemini(Gemini):
-    """The episode Gemini client, with the endpoint replaceable: NOVEL_GEMINI_URL is a URL
-    template with {model} (tests point it at a local server). Without it, the real API."""
-
-    def _post(self, body: dict) -> dict:
-        url = os.environ.get("NOVEL_GEMINI_URL")
-        if not url:
-            return super()._post(body)
-        req = urllib.request.Request(
-            url.format(model=self.model), json.dumps(body).encode(),
-            {"x-goog-api-key": self.keys[self.k], "Content-Type": "application/json"})
-        return json.load(urllib.request.urlopen(req, timeout=300))
+    """The episode Gemini client. The endpoint is replaceable: NOVEL_GEMINI_URL is a URL template with {model}
+    (tests point it at a local server); Gemini._post reads it."""
 
 
 def _ep_number(ep_root: Path) -> int | None:

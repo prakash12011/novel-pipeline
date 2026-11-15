@@ -32,7 +32,8 @@ STAGES = ["text", "hindi", "lock", "scenes", "qa", "chars", "plan", "images", "a
 PRE_BUILD = set(STAGES[:STAGES.index("captions") + 1])
 BUILD = {"video", "join"}
 
-PROMPT_THEN = "(then paste into Gemini and run: novel import)"
+BY_HAND = "(or by hand: novel prompt --chapters {ch} --copy, paste into Gemini, then novel import)"
+REDO_BY_HAND = "(or by hand: novel prompt --chapters {ch} --mode scenes --copy, paste into Gemini, then novel import --replace)"
 
 
 # ------------------------------------------------------------------ small helpers
@@ -608,8 +609,7 @@ def missing_list(rows: list[dict], info: dict, ep: int, book: str, state_book, s
             if not r["text"]:
                 g.add("text", n, "English text missing", "novel extract", ep_flag=False, after="(then: novel episode add)")
             else:
-                g.add("hindi", n, "no Hindi yet", "novel prompt --chapters {ch} --copy", single_range=True,
-                      ep_flag=False, after=PROMPT_THEN)
+                g.add("hindi", n, "no Hindi yet", "novel write", single_range=True, after=BY_HAND)
             continue
         if r["lock"] == "-":
             g.add("lock", n, "not approved (Hindi not locked or prompts not written)", "novel approve --chapters {ch}")
@@ -618,11 +618,10 @@ def missing_list(rows: list[dict], info: dict, ep: int, book: str, state_book, s
                   after="(or restore the file; audio, scenes and captions made from the old text go stale)")
         locked = r["lock"] == "ok"
         if locked and r["scenes_state"] == "-":
-            g.add("scenes", n, "no scenes yet", "novel prompt --chapters {ch} --copy", single_range=True,
-                  ep_flag=False, after=PROMPT_THEN)
+            g.add("scenes", n, "no scenes yet", "novel write", single_range=True, after=BY_HAND)
         elif locked and r["scenes_state"] == "BAD":
             g.add("scenes", n, f"scenes are not usable ({r['scenes_problem']})",
-                  "novel prompt --chapters {ch} --mode scenes --copy", single_range=True, ep_flag=False, after=PROMPT_THEN)
+                  "novel write --redo {ch}", single_range=True, after=REDO_BY_HAND)
         if r["qa"] == "stale":
             g.add("qa", n, "QA is out of date (the Hindi or the scenes changed after it ran)",
                   "novel qa --chapters {ch}", single_range=True, ep_flag=False)

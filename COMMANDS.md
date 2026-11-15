@@ -7,7 +7,7 @@ Everything you type is `novel <command>`. Open a terminal (Windows Terminal or P
 - Boxes marked `cmd` are commands to copy. Boxes marked `text` are what the screen shows.
 - The examples use the book **coi** (Circle of Inevitability), episode 3 = chapters 21-30.
 
-**Not built yet (read this first):** the "full" mode, where Gemini also writes the Hindi for new chapters, is **not finished**. `novel import` recognises the Hindi block and keeps it in `inbox/`, but does not turn it into the locked Hindi file, and it does not import the picture lists of a full-mode batch. Until that is built, only the "scenes" mode works end to end: the Hindi already exists and is locked (COI episodes 3 to 6). Steps that need the unfinished part are marked **[FULL MODE: NOT BUILT]**.
+**Two ways to write (read this first):** `novel write` lets the Gemini API (your keys) write the Hindi of a new chapter, the bible and the picture lines, and files them. The older way, pasting a prompt into the Gemini app and filing each reply with `novel import`, still works and ends in the same files. The by-hand "full" mode (Gemini writes the Hindi in the app) is **not finished**: `novel import` recognises the Hindi block and keeps it in `inbox/`, but does not turn it into the locked Hindi file. For a chapter without Hindi use `novel write`. Steps that need the unfinished by-hand part are marked **[FULL MODE: NOT BUILT]**.
 
 ---
 
@@ -73,9 +73,21 @@ Takes seconds.
 novel status
 ```
 
-For E003 you see, in the Missing list: `chapters 21-30: no scenes yet -> novel prompt --chapters 21-30 --copy`. That is step 3.
+For E003 you see, in the Missing list: `chapters 21-30: no scenes yet -> novel write   (or by hand: novel prompt --chapters 21-30 --copy, ...)`. That is step 3.
 
-### Step 3. Make the Gemini prompt
+### Step 3. Write the bible and the picture lines with the Gemini API
+
+```cmd
+novel write
+```
+
+It takes the next 5 chapters of the episode that need work (setting `gemini.chapters_per_run`; to choose them: `novel write --chapters 21-25`). A chapter with no Hindi is translated first and locked; a chapter with Hindi keeps it untouched. Then it asks Gemini for the bible of those chapters and for the pictures of each chapter, files every answer exactly like `novel import` does, and asks again when an answer is rejected. You see one line per step, then a table with one row per chapter, the path of the run log and `Next: novel qa --chapters 21-25`. Run the same command again for the next 5 chapters, or to finish a chapter that stopped: finished chapters are skipped.
+
+Want to see the plan first? `novel write --dry-run` shows what it would do and how big each request is, and sends nothing. More in "Writing with the Gemini API" below.
+
+If you prefer the Gemini app, or `novel write` keeps failing on a chapter, do steps 3 (by hand) to 6 below instead; skip them when `novel write` worked.
+
+### Step 3 (by hand). Make the Gemini prompt
 
 ```cmd
 novel prompt --chapters 21-30 --copy
@@ -83,13 +95,13 @@ novel prompt --chapters 21-30 --copy
 
 You see: `Batch B021-030 (scenes mode) for book 'coi', chapters 21-30`, a list of **files to upload** (full paths), `Prompt: ...prompt.txt`, and for scenes mode the number of pictures per chapter (for COI 21-30: 571 pictures in total). The prompt is now on your clipboard (whatever you had copied before is gone).
 
-For new chapters (no locked Hindi) the same command makes a "full" batch. **[FULL MODE: NOT BUILT]** (see the note at the top).
+For new chapters (no locked Hindi) the same command makes a "full" batch. **[FULL MODE: NOT BUILT]** (see the note at the top). Use `novel write` for those.
 
 If the clipboard is not available it says so; open the `prompt.txt` it names and copy the text by hand.
 
 Takes seconds. Do not use `--out` for real work: `novel import` looks for the batch in the book's `gemini/` folder and will not find it elsewhere.
 
-### Step 4. Start the Gemini conversation
+### Step 4 (by hand). Start the Gemini conversation
 
 Outside the terminal. Details are in "The Gemini conversation" below. In short:
 
@@ -100,7 +112,7 @@ Outside the terminal. Details are in "The Gemini conversation" below. In short:
 
 Takes as long as Gemini takes: varies.
 
-### Step 5. File the reply
+### Step 5 (by hand). File the reply
 
 ```cmd
 novel import
@@ -110,7 +122,7 @@ It reads the clipboard. You see a line per block, for example `BIBLE B021-030  o
 
 Want to check without saving anything? `novel import --dry-run`.
 
-### Step 6. One chapter at a time
+### Step 6 (by hand). One chapter at a time
 
 Repeat until the batch is complete (for a 10-chapter episode: 10 rounds):
 
@@ -273,9 +285,40 @@ You see `marked as published: ...` and `Next episode: novel episode add --book c
 
 ---
 
+## Writing with the Gemini API
+
+`novel write` does by code what the Gemini conversation below does by hand. It uses your API keys (`GEMINI_API_KEY`, `GEMINI_API_KEY2`, ... in `secrets.env`) and the model in `gemini.api_model` (Gemini 3.5 Flash Lite).
+
+**What one run does** (for the next 5 chapters that need work):
+
+1. A chapter with **no Hindi**: one call writes the Hinglish narration. It is checked (no digits, no Latin letters, no notes, the heading line, the names of the NAMES list, the length against the English), stored in `hindi/` and locked. A bad answer is asked again with the problems listed. A long chapter that is cut off by the length limit is continued from its last full paragraph. A chapter that **already has Hindi is never translated again** (its narration and timing stay as they are).
+2. The **bible** of the chapters: one call.
+3. The **pictures** of each chapter: one call per chapter. Each call carries the rules, the bible as it is at that moment (so people and places added by an earlier chapter of the run are known), that chapter's English text and its windows only.
+4. Every answer goes through the same importer as `novel import` (raw copy in `gemini\<batch>\raw\`, checks, progress, the scene file). When it says an answer is wrong, the tool asks again with the FIX list and the rejected block; when it says the block stops early, it asks for the missing windows only. Each block is asked at most 3 times (`gemini.max_attempts_per_block`); a block that still fails is left as it is, reported, and the run goes on with the next chapter.
+
+**Rate limits.** When one key is limited the next key is used (the line says `key 1 of 3`, never the key). When every key is limited the tool tries the models in `gemini.fallback_models`, then waits a minute and tries again, a few times; if the daily quota is gone it stops with `STOPPED: the Gemini quota is used up`. It also waits `gemini.min_seconds_between_calls` (4) between calls. Which model wrote each block is kept in `progress.json` and in the scene file (`source.model`).
+
+**Options.**
+
+- `novel write --dry-run`: the plan and the size of each request; sends and writes nothing.
+- `novel write --chapters 21-25`: choose the chapters. `--max-chapters 3` takes fewer (or more) than 5.
+- `novel write --redo 23`: write the scenes of chapter 23 again. The old files move to `old\v1\`; nothing is deleted.
+- `novel write --fix 23`: after `novel qa` said FIX for chapter 23, send the same correction message that `novel qa --fix-prompt 23` prints to the API and file the PATCH it returns. Then run `novel qa --chapters 23` again.
+- `novel write --no-translate`: refuse a chapter that has no Hindi instead of translating it.
+- `novel write --parallel 2`: ask 2 chapters at the same time (setting `gemini.parallel`, default 1). Answers are still filed one at a time. If two chapters add the same new place at once, the second one is rejected by the importer (the place exists) and that chapter's pictures are checked against the bible as it then is; if that fails it is asked again.
+- `Ctrl+C` stops after the current call and leaves everything consistent. Run the same command to continue.
+
+**The run log** is `gemini\<batch>\run-<time>.log` (every request's size and every answer's verdict, never a key). The requests and answers themselves are in `gemini\<batch>\api\`. The exit code is 0 when every chapter of the run is complete, 1 otherwise.
+
+**Who and where in the frame:** each group lists every named character in the place in `present`; each picture's `cast` is the people visibly in it (fewer is better: the ones the moment is about; a picture where nobody is visible has an empty cast). Everyone in a cast must be in the group's `present` (otherwise the block is rejected) and has a `position` (for example `left foreground, by the door`; two people never share one). Flow gets it as `- <Name>: <position>; <pose>; hands: ...`. `novel qa` warns about a person listed in `present` who is drawn in none of the group's pictures, and about a person named in a picture's text but missing from its cast.
+
+**Where and when** (the `where` and `time` of each group): every group of pictures says `where` (`indoor` or `outdoor`) and `time` (`dawn`, `day`, `dusk` or `night`). Gemini decides them from the narration of that moment, not from the place's kind. They are passed on to Flow as a `SETTING:` line, for example `SETTING: indoors, at night. No daylight through windows; the only light is: ...`. `novel qa` warns when they contradict the light (sunlight at night, moonlight indoors with no window, lamps as the only light outdoors by day), when `where` contradicts the place's kind, and notes a move through the door.
+
+---
+
 ## The Gemini conversation
 
-This is the one part you do by hand in the browser. The tool makes the prompt, files what comes back and checks it.
+This is the part you do by hand in the browser when you do not use `novel write`. The tool makes the prompt, files what comes back and checks it.
 
 ### What to upload and paste
 
@@ -339,6 +382,9 @@ A rejected block writes nothing; the tool prints what is wrong and what to say t
 | `too few images: windows 60-65 have no image line (59 of 65 received) and the reply has no '>>> MORE c0021 IMAGES' line` | Gemini left pictures out | Type what the `Say to Gemini:` line says |
 | `location 'x' is not in the location registry (did you mean y?); add it with a BIBLE location line first` | A picture uses a place nobody defined | Type what the `Say to Gemini:` line says (it asks for the missing place) |
 | `unknown character 'x' ... new people need a BIBLE character line first` | A picture uses a person nobody defined | Same: type what the `Say to Gemini:` line says |
+| `where: missing ...` or `where: 'inside' is not one of indoor|outdoor` | A group line has no (or a wrong) `where` | Same: type what the `Say to Gemini:` line says |
+| `position: missing or empty ...` or `share the position 'centre'` | A person in a picture has no `position` (where in the frame and the place), or two people in one picture have the same one | Same: type what the `Say to Gemini:` line says |
+| `tobias_reed is in the cast but not in group g01's "present"` | A person is drawn who the group line does not list in `present` (the group must name everyone involved first) | Same: type what the `Say to Gemini:` line says |
 | `hands: missing or empty: say what the hands do...` | A person in a picture has no `hands` | Same: type what the `Say to Gemini:` line says |
 | `action: 41 characters; needs 60-600` | The picture description is too short or too long | Same: type what the `Say to Gemini:` line says |
 | `uses the banned word '...'` or `must be English (Devanagari found)` | A picture description breaks the content rules | Same: type what the `Say to Gemini:` line says |
@@ -352,6 +398,25 @@ Gemini keeps getting the same line wrong? Run `novel qa --fix-prompt 21` after t
 ---
 
 ## When something stops
+
+### `novel write`: a rate limit, a quota, or a block that keeps being rejected
+
+**You see** lines like `rate limit: key 1 of 3 on gemini-3.5-flash-lite; switching to key 2`: nothing to do, the next key is used. `all 3 keys rate-limited, waiting 65s (wait 1 of 4)`: it waits and tries again by itself.
+
+**You see** `STOPPED: the Gemini quota is used up` (every key is limited after the waits; the free quota resets at midnight, Pacific time). The run ends cleanly with the table of what was finished.
+
+**Do:**
+1. Try again later with the same command: `novel write`. Finished chapters are skipped, a block that was filed stays filed.
+2. Or add another key to `secrets.env` (`GEMINI_API_KEY2`), or name another model in `gemini.fallback_models`.
+
+**You see** `chapter 21: scenes: not complete after 3 attempts; reported, going on`, and `failed` or `partial` in the table. The answer kept being rejected. The lines above it say why (`rejected (2 errors): ...`); the tool already sent those errors back to Gemini each time.
+
+**Do:**
+1. Run `novel write` again (it asks again for that chapter only, in the same batch).
+2. Still failing? Read the run log (the path is printed) and the last request and answer in the `api` folder next to it. Then use the by-hand way for that chapter: `novel prompt --chapters 21-25 --copy`, paste into the Gemini app, then `novel import` (see "The Gemini conversation").
+3. A chapter that is filed but you want written again: `novel write --redo 21`.
+
+**You see** `refused (--no-translate)` or `the Hindi changed after it was locked`: the line tells you what to restore or which option to remove.
 
 ### Flow stops the run (CAPTCHA, "unusual activity", sign-in, limit)
 
@@ -488,7 +553,7 @@ novel settings show --book mybook
 
 At least set `images.flow_project`, `publish.title_template`, `publish.description_template` and `publish.research_seeds` in `book.yaml` (see `docs/settings.md`).
 
-**6. Go through "One episode, start to finish" from step 3.** The first batch is the "full" kind (no Hindi yet): **[FULL MODE: NOT BUILT]**. Today a new book can be prepared (steps 1-5) but cannot yet be taken through the Hindi.
+**6. Go through "One episode, start to finish" from step 3.** `novel write` translates the chapters that have no Hindi and locks them, then writes the bible and the pictures. (The by-hand "full" batch of `novel prompt` is **[FULL MODE: NOT BUILT]**.)
 
 Migrating the old COI Audiobook project: `novel migrate coi --from "D:\COI Audiobook" --dry-run` shows the plan and writes nothing; without `--dry-run` it copies (it never changes the old folder); add `--with-media` to copy the finished videos too. Only the book `coi` can be migrated.
 
@@ -652,6 +717,10 @@ chapters:
         enabled: false
 ```
 
+### Picture size
+
+Pictures are downloaded from Flow at 1K (1376x768) by default. The HD step then upscales each picture for the video after the Gemini mark is removed, so the video looks the same and the downloads are faster. To download at 2K (2752x1536) instead, set `images.quality: 2K` in `book.yaml`, or pass `--quality 2K` to `novel images` for one run.
+
 ### Pictures per chapter
 
 Keys: `images.paced_seconds` (default 7.0) and `images.max_seconds` (default 7.5). Both may be set per chapter.
@@ -683,6 +752,27 @@ images:
   chapters_per_day: 2
   max_per_run: 120
 ```
+
+### Removing the Gemini mark
+
+Flow stamps a small star in the bottom-right corner of every download. The default, `images.watermark: crop`, cuts it off, which costs about a tenth of every picture. `images.watermark: remove` takes the star out with the npm package `@pilio/gemini-watermark-remover` instead (pinned in `flow/package.json`; `npm ci` in `flow` installs it, nothing else to set up; it works on your PC and sends nothing anywhere). Whole book, in `book.yaml`:
+
+```yaml
+images:
+  watermark: remove
+```
+
+The honest picture, measured on 78 real pictures: the tool works on the 2752x1536 downloads in about three cases out of four (bright or textured backgrounds are clean; dark backgrounds can keep a faint dark star). On the 1376x768 downloads, which are most of E001 and E002, it almost never cleans the star: it misses the star's real position (it assumes a different one) or leaves a dark star-shaped ghost, and the tool has no option to tell it where the mark is. So every picture is checked after the tool ran, and a picture that still shows the mark, a ghost or a bright rim is **cropped instead**, exactly as `crop` does it. The copies in `images\cNNNN\clean\` therefore never show a mark, but they are a mix of full-frame and cropped pictures (both 16:9, so the video looks the same, only a bit more of the picture shows where removal worked). `clean.json` in that folder says which is which.
+
+**Old pictures are never touched.** The default stays `crop`, so nothing changes for existing episodes; `remove` applies only to chapters cleaned from now on. `novel clean`, and the automatic step in `novel build` and `novel render`, refuse (and say why, and that the old pictures are left as they are) an episode marked `published: true`, anything under an `_archive` folder, and a chapter that already has a rendered chapter video or `clean\` / `hd\` pictures made the old crop way. Such a chapter keeps being built with `crop`. For an unpublished chapter only, `novel clean --chapters 21 --force` (with an explicit `--chapters`) lifts the last refusal. A published or archived episode is never cleaned.
+
+To try it on a chapter and look at the result, with no video work:
+
+```cmd
+novel clean --ep 2 --chapters 11 --sheet --open
+```
+
+It prints, per chapter, `removed 41, cropped instead 20 (ghost 14, still marked 6), no mark 0` and opens `clean\sheet.html`: for every picture a before and after of the corner, enlarged, rejected pictures first. Pictures already cleaned are skipped (`--force` redoes them). After you set `images.watermark: remove`, `novel render` and `novel build` clean the chapters they render by themselves and use these copies; with `crop` they behave as before (the clean copies of `remove` are deleted when a `crop` render needs its own). Switching the setting makes the chapter videos render again; videos made before this setting existed count as `crop`. `none` leaves the mark in the video.
 
 ### Voice (narration)
 
@@ -732,6 +822,9 @@ Checks this PC (Python, packages, Node, ffmpeg, Chrome, Kaggle, keys, fonts) and
 - `novel episode add [--book B] [--chapters A-B] [--ep N]`: makes the next episode folder (or the given one) and makes it current.
 - `novel episode list [--book B]`: one line per episode (Hindi, locked, audio, published).
 
+### novel write
+`novel write [--book B] [--ep N] [--chapters A-B] [--max-chapters N] [--model M] [--parallel N] [--dry-run] [--no-translate] [--redo N] [--fix N]`: the Gemini API writes the Hindi of chapters that have none (and locks it), the bible, and the picture lines, and files them with the importer. Without `--chapters` it takes the next `gemini.chapters_per_run` (5) chapters of the episode that need work; chapters that already have scenes are skipped and make no call. `--max-chapters` changes how many. `--model` overrides `gemini.api_model`. `--parallel` asks that many chapters at once. `--dry-run` shows the plan and request sizes and sends and writes nothing. `--no-translate` refuses chapters without Hindi. `--redo N` writes the scenes of chapter N again (old files move to `old\vN\`). `--fix N` sends the QA correction message of chapter N to the API and files the PATCH. `--translate N[,M...]` translates the listed chapters; a chapter that already has a translation keeps the old Hindi, audio, timing, captions, scenes, images and QA in `old\vK\` (nothing is deleted), and the new Hindi needs new narration (`novel tts push --chapters N`). `--restore N` puts back the latest set-aside version of chapter N (the current one is set aside first, so this can be undone) and makes no API call. Exit code 0 when every chapter of the run is complete.
+
 ### novel prompt
 `novel prompt --chapters A-B [--book B] [--mode auto|full|scenes] [--copy] [--out DIR]`: writes the Gemini prompt and the files to upload. `auto` picks scenes when every chapter has locked Hindi and full when none has; a mix is refused. `--copy` puts the prompt on the clipboard. `--out` writes elsewhere and prints a warning (then `novel import` cannot find the batch; it is for looking at a prompt only).
 
@@ -773,10 +866,13 @@ Checks this PC (Python, packages, Node, ffmpeg, Chrome, Kaggle, keys, fonts) and
 `novel captions [--book B] [--ep N] [--chapters A-B] [--force]`: writes the English subtitle text for locked chapters. `--force` redoes current ones. (A build makes missing captions itself when a Gemini key exists.)
 
 ### novel images
-`novel images [--book B] [--ep N] [--chapters A-B] [--max N] [--batch K] [--resend ID] [--upgrade] [--i-checked-flow] [--dry-run]`: makes pictures in Flow. Without `--chapters` it takes the next `images.chapters_per_day` chapters that have work. `--max` caps pictures this run. `--batch K` sends K prompts side by side. `--resend c0021-s05` sends one picture again on purpose. `--upgrade` upgrades 1K pictures to 2K. `--i-checked-flow` after a Flow stop. `--dry-run` shows what it would do and the command, runs nothing.
+`novel images [--book B] [--ep N] [--chapters A-B] [--max N] [--batch K] [--resend ID] [--upgrade] [--quality 1K|2K] [--i-checked-flow] [--dry-run]`: makes pictures in Flow. Without `--chapters` it takes the next `images.chapters_per_day` chapters that have work. `--max` caps pictures this run. `--batch K` sends K prompts side by side. `--resend c0021-s05` sends one picture again on purpose. `--upgrade` upgrades 1K pictures to 2K. `--quality 2K` (or `1K`) sets the download size for this run only; the default is `images.quality`, which is 1K. `--i-checked-flow` after a Flow stop. `--dry-run` shows what it would do and the command, runs nothing.
 
 ### novel sheet
 `novel sheet --chapter N [--book B] [--ep E] [--open]`: web page of one chapter's pictures with their text. `--open` opens it.
+
+### novel clean
+`novel clean [--book B] [--ep N] [--chapters A-B] [--force] [--sheet] [--open]`: removes the Gemini mark from the downloaded pictures of the chapters (default: every chapter of the episode that has pictures) into `images\cNNNN\clean\`, checks each result and crops the pictures where removal failed. Prints per chapter how many were removed, cropped instead (and why) or had no mark. `--force` redoes finished pictures. `--sheet` writes `clean\sheet.html`, a before/after of every picture's corner; `--open` opens it. Needs `npm ci` in `flow` once. Exit code 1 only if nothing could be done (no such chapter or episode, tool not installed).
 
 ### novel status
 `novel status [--book B] [--ep N] [--all] [--json] [--chapters A-B]`: the checklist. `--all` one line per episode of the book. `--json` machine-readable. `--chapters 21-25` limits the table and verdict. Exit code 0 only when ready to build, ready to publish or published.

@@ -270,8 +270,15 @@ def classify_importer_warning(msg: str) -> tuple[str, str]:
     if "'medium' on" in msg:
         m = re.match(r"group (\S+):", msg)
         return "shots", f"group {m.group(1)}" if m else "chapter"
+    if "involved but never drawn" in msg:
+        m = re.match(r"group (\S+?):", msg)
+        return "present_unused", f"group {m.group(1)}" if m else "chapter"
     if "signature prop" in msg:
         return "props", f"images {nums.group(1).strip()}" if nums else "chapter"
+    m = re.match(r"(?:note: )?group (\S+?):? ", msg)
+    if m and ("where is '" in msg or "the light mentions" in msg or "the only light outdoors" in msg
+              or "follows group" in msg):
+        return "setting", f"group {m.group(1)}"
     return "scene_warning", "chapter"
 
 
@@ -340,7 +347,7 @@ def code_check(run: Run, n: int) -> Result:
             limit = omission_ratio(run.book)
             if ratio < limit:
                 r.warn("omission", "chapter", f"possible omission: the Hindi is {ratio:.2f} of the English length "
-                                              f"(under {limit:g}); information only, there is no word limit")
+                                              f"(under {limit:g}); information only")
         else:
             r.warn("english_missing", "chapter", "no English chapter file found; names and length not checked")
 
@@ -410,6 +417,13 @@ def code_check(run: Run, n: int) -> Result:
     # ---- warnings of the importer (cast outside present, wearing habit, shot variety, signature props)
     try:
         gl, il = run.imp.doc_lines(doc)
+        for gid, g in gl.items():                       # an older scene file has no `where`: the location's kind
+            if not g.get("where"):
+                by_kind = C.kind_where(C.ChapterCtx(n, 0, run.state), g.get("loc"))
+                if by_kind:
+                    g["where"] = by_kind
+                r.warn("setting", f"group {gid}", f"group {gid} has no `where` (indoor or outdoor)"
+                       + (f"; the location's kind says {by_kind}" if by_kind else "; the location's kind does not say"))
         cctx = C.ChapterCtx(n, len(scenes), run.state, run.imp.max_characters, S.BANNED)
         for msg in C.chapter_warnings(gl, il, cctx):
             kind, ref = classify_importer_warning(msg)
@@ -556,8 +570,8 @@ WHAT YOU ARE GIVEN
 WHAT TO LOOK FOR (the "kind" of a finding)
 - missing_plot: an important event, reveal, clue, decision or line of dialogue in the English that the Hindi leaves out; or an action scene that is summarised instead of told move by move. Ignore dropped filler, description and repetition: the Hindi is deliberately shorter.
 - image_mismatch: a picture that shows something its window of narration does not tell, or the wrong moment of the story.
-- wrong_character: a person in a picture's cast who is not present at that moment; a person who is present and visible but missing from the cast; or a wrong outfit variant for what the text says they wear or look like.
-- continuity: inside one group, a change of place, time of day or light that the text does not support; or a place that changes between two pictures without a group boundary.
+- wrong_character: a person in a picture's cast who is not present at that moment; a person who is present and visible but missing from the cast; or a wrong outfit variant for what the text says they wear or look like. Everyone the narration of that window shows acting or speaking must be in the cast.
+- continuity: inside one group, a change of place, time of day or light that the text does not support; or a place that changes between two pictures without a group boundary. A picture's action must also not contradict its group's indoor/outdoor ("where") and time of day: for example people in the open sky at night under "indoor", a window with daylight in a "night" group, or a "day" group whose action lights lamps for the sky.
 - prop_imprint: a person holding their signature prop (see "props" in the bible) when the text of that moment does not have them using it. Habit, not story.
 - tone: Hindi that is stiff, bookish or literal translation instead of natural spoken Hinglish. Severity is always warn.
 
@@ -611,7 +625,7 @@ def build_review_prompt(run: Run, r: Result, english: str) -> tuple[str, str]:
         g = groups.get(gid) or {}
         place = (locs.get(g.get("loc")) or {}).get("name") or g.get("loc")
         present = ", ".join((chars.get(k) or {}).get("display") or k for k in g.get("present") or []) or "nobody named"
-        pics.append(f"GROUP {gid}: place {place}; time {g.get('time')}; light {g.get('light')}; weather "
+        pics.append(f"GROUP {gid}: place {place}; {g.get('where') or 'indoor/outdoor not given'}; time {g.get('time')}; light {g.get('light')}; weather "
                     f"{g.get('weather') or '-'}; present: {present}; staging: {g.get('staging')}")
         for s in scenes:
             if s.get("group") != gid:
@@ -620,6 +634,8 @@ def build_review_prompt(run: Run, r: Result, english: str) -> tuple[str, str]:
             for c in s.get("cast") or []:
                 disp = (chars.get(c.get("key")) or {}).get("display") or c.get("key")
                 bits = []
+                if c.get("position"):
+                    bits.append(f"position: {c.get('position')}")
                 if c.get("var") and c.get("var") != "base":
                     bits.append(f"variant {_variant_label(chars, c.get('key'), c.get('var'))}")
                 bits.append(f"hands: {c.get('hands')}")

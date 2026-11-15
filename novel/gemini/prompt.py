@@ -187,17 +187,23 @@ def _review_entries(chars_doc: dict) -> list[dict]:
     return out
 
 
-def bible_text(state: dict) -> tuple[str, bool]:
-    """(text, has_review_section)."""
-    chars_doc, locs_doc = state["characters"], state["locations"]
-    chars = chars_doc.get("characters") or {}
-    locs = locs_doc.get("locations") or {}
+def names_lines(state: dict) -> list[str]:
+    """The NAMES section of bible.txt as lines."""
+    chars = state["characters"].get("characters") or {}
     names = dict(state.get("names") or {})
     for ch in chars.values():
         if ch.get("display") and ch.get("hi"):
             names.setdefault(ch["display"], ch["hi"])
     lines = ["NAMES (English = Devanagari; spell exactly like this)"]
-    lines += [f"{en} = {hi}" for en, hi in names.items()] or ["(none yet)"]
+    return lines + ([f"{en} = {hi}" for en, hi in names.items()] or ["(none yet)"])
+
+
+def bible_text(state: dict) -> tuple[str, bool]:
+    """(text, has_review_section)."""
+    chars_doc, locs_doc = state["characters"], state["locations"]
+    chars = chars_doc.get("characters") or {}
+    locs = locs_doc.get("locations") or {}
+    lines = names_lines(state)
 
     lines += ["", "CHARACTER BIBLE"]
     if not chars:
@@ -285,11 +291,13 @@ no trailing commas.{hindi_plain}
 HINDI_KIND = "  HINDI c{ex4}     -> inbox/c{ex4}.hindi.txt      (4-digit chapter number)\n"
 HINDI_PLAIN = " The HINDI block is plain text, not in a code fence."
 
-PART_A_FULL = """PART A - THE NARRATION (HINDI block)
-- Retell the chapter as a Hinglish narration for friends and family. Keep EVERY plot event, reveal, decision, clue,
-  explanation and line of dialogue that matters. There is NO word limit: a chapter is as long as its story needs.
-  Never drop information to make it shorter. Add nothing that is not in the chapter.
-- Cut only physical-appearance description (the pictures show it), repeated inner thoughts and filler.
+PART_A_FULL_TEXT = """PART A - THE NARRATION (HINDI block)
+- Retell the chapter as a Hinglish narration for friends and family. Write the narration as a detailed recap of about
+  {target} Hindi words (between {low} and {high} words). Leave out character descriptions (looks, clothes, background
+  about who someone is) and other side information that does not move the story; keep every plot event, decision,
+  reveal, clue and line of dialogue that matters. Action scenes stay detailed: tell them move by move, in order. Add
+  nothing that is not in the chapter.
+- Cut repeated inner thoughts and filler.
 - ACTION SCENES (fights, chases, traps, escapes, powers in use): never summarise. Tell them blow by blow, as if live:
   where everyone stands, what each does next and why, which weapon, trick or power, how the enemy reacts, near misses,
   what goes wrong and exactly how it ends. One move per sentence, in order. These parts get the most words.
@@ -303,12 +311,16 @@ PART_A_FULL = """PART A - THE NARRATION (HINDI block)
   and keep that spelling everywhere.
 - First line: चैप्टर <chapter number in Hindi words>: <title in Hinglish>. No other headings, notes or summaries.
 - End each chapter on a small hook.
-- PICTURE MARKERS: put {1}, {2}, {3} ... in the text where a new picture starts. The first paragraph after the
+"""
+
+PICTURE_MARKERS = """- PICTURE MARKERS: put {1}, {2}, {3} ... in the text where a new picture starts. The first paragraph after the
   heading starts with {1}. Put a new marker whenever what we should SEE changes (new place, new person acting or
   speaking, new action, a jump in time), and at the latest every two sentences (about {paced} seconds, ~{chars} letters).
   A marker always stands at the start of a sentence, never inside one, never two in a row. Numbers run from 1 in
   every chapter with no gaps. The heading line has no marker.
 """
+
+PART_A_FULL = PART_A_FULL_TEXT + PICTURE_MARKERS
 
 PART_A_SCENES = """PART A - THE NARRATION (already final)
 The Hindi narration is final; do not rewrite it. The attached windows file cuts each chapter into numbered WINDOWS of
@@ -323,18 +335,33 @@ A GROUP is one continuous moment in ONE place: a conversation, a fight, a walk d
 happens in the same place, at the same time of day, in the same light; only the camera and the poses change. Start a
 new group only when the place or the time changes, or for a flashback or dream.
 """ + SCHEMA_NOTE + """
-  {"type":"group","group":"g01","loc":"<location key>","time":"dawn|day|dusk|night","light":"...","weather":"...",
-   "present":["<character keys in this place>"],
+  {"type":"group","group":"g01","loc":"<location key>","time":"dawn|day|dusk|night","where":"indoor|outdoor",
+   "light":"...","weather":"...","present":["<character keys in this place>"],
    "staging":"where each person is in the place and what is between them, e.g. one at the corner table by the
               window facing the room; the other opposite, back to the bar; a candle between them"}
   {"type":"image","n":<{n_label}>,"group":"g01","shot":"<shot>",
-   "cast":[{"key":"<character key>","var":"<variant key, usually base>","pose":"...","hands":"...","mood":"...",
-            "wearing":null}],
+   "cast":[{"key":"<character key>","var":"<variant key, usually base>","position":"<where in the frame and the place>",
+            "pose":"...","hands":"...","mood":"...","wearing":null}],
    "others":"unnamed people in the picture, or empty","action":"<English, 150-450 characters>","focus":[x,y]}
 Rules:
 - {first_rule}
+- "time" and "where" are required on EVERY group line. "where" is "indoor" when the camera stands inside a building,
+  cave, tent or vehicle, and "outdoor" when it stands in the open (street, yard, field, roof, shore). Decide it for
+  each group from the narration of that moment, NOT from the location's kind: one location can have both an inside and
+  an outside (a house and its yard). A doorway or a window view is whichever side the camera stands on. "time" says
+  when it happens. "light" must agree with both: no sunlight at night; no moon or stars indoors unless a window is
+  mentioned; by day outdoors the light is the sky, not lamps.
+- "present" (group): EVERY named character who is in this place during the group, by key, listed first. It is required
+  and not empty, unless the group truly has nobody (an empty street): then it is [] and every image of the group has
+  an empty cast.
 - "cast": the people VISIBLY in the picture (at most {max_characters}), by key. Everyone in "cast" must be in the
-  group's "present". Someone only mentioned or remembered is not in the picture.
+  group's "present": a cast member who is not listed in "present" makes the whole block be rejected. Someone only
+  mentioned, remembered or heard is not in the picture. Fewer people is better: show who the moment is about. A
+  window in which nobody is visible (a description of a place, an object, a letter) gets an empty cast [] and an
+  "establishing" or "detail" shot.
+- "position" (each cast member): where that person is in the frame and in the place, in plain words: "left foreground,
+  by the door", "centre, seated at the table", "far right, in the background". Required. Two people in one picture
+  never share a position, and the positions stay the same inside a group unless the narration moves someone.
 - "var": the variant the bible defines for this chapter (a variant applies only inside its chapter range).
 - "hands": for EVERY cast member say what the hands do or hold: "empty, at her sides", "gripping an axe",
   "holding one card". A prop appears ONLY when the narration of that moment needs it. Never give someone their
@@ -384,7 +411,7 @@ character, decide for each note: a lasting change becomes a "variant" line with 
 """
 
 EXAMPLE_GROUP = {
-    "type": "group", "group": "g01", "loc": "harbour_market", "time": "dusk",
+    "type": "group", "group": "g01", "loc": "harbour_market", "time": "dusk", "where": "outdoor",
     "light": "low orange sun from the left, long shadows", "weather": "clear",
     "present": ["maren", "tobias"],
     "staging": ("Maren stands behind a fruit stall on the left; Tobias faces her from the other side of the "
@@ -393,9 +420,11 @@ EXAMPLE_GROUP = {
 EXAMPLE_IMAGE = {
     "type": "image", "n": 1, "group": "g01", "shot": "wide",
     "cast": [
-        {"key": "maren", "var": "base", "pose": "standing straight behind the stall",
+        {"key": "maren", "var": "base", "position": "left middle distance, behind the stall",
+         "pose": "standing straight behind the stall",
          "hands": "empty, resting flat on the stall", "mood": "wary", "wearing": None},
-        {"key": "tobias", "var": "base", "pose": "leaning forward over the crate",
+        {"key": "tobias", "var": "base", "position": "right middle distance, in front of the stall",
+         "pose": "leaning forward over the crate",
          "hands": "empty, one pointing at the crate", "mood": "curious", "wearing": None},
     ],
     "others": "a few shoppers far behind, blurred",
@@ -415,11 +444,24 @@ def example_block() -> str:
             "===== END IMAGES c0001 =====\n")
 
 
+def word_band(target: int, tolerance: float) -> tuple[int, int]:
+    """(low, high): the target minus and plus the tolerance, rounded to the nearest 10 words."""
+    return (round(target * (1 - tolerance) / 10) * 10, round(target * (1 + tolerance) / 10) * 10)
+
+
+def translate_band(book: str) -> dict:
+    """translate.target_words and translate.words_tolerance as the {target}, {low} and {high} of the narration rules."""
+    from novel.core import settings
+    target = int(settings.get("translate.target_words", book=book, default=800))
+    low, high = word_band(target, float(settings.get("translate.words_tolerance", book=book, default=0.20)))
+    return {"target": target, "low": low, "high": high}
+
+
 def build_prompt(mode: str, *, channel: str, title: str, first: int, last: int,
                  paced: float, chars_per_second: float, max_characters: int,
                  window_counts: dict[int, int] | None = None, review: bool = False,
                  chapters_file: str | None = None, bible_file: str = "bible.txt",
-                 windows_file: str | None = None) -> str:
+                 windows_file: str | None = None, target: int = 800, low: int = 640, high: int = 960) -> str:
     from novel.stages import episode_translate as T
     scenes = mode == "scenes"
     chapters_file = chapters_file or f"chapters-{first}-{last}.txt"
@@ -442,7 +484,7 @@ def build_prompt(mode: str, *, channel: str, title: str, first: int, last: int,
         "batch": batch_id(first, last), "ex4": f"{first:04d}",
         "paced": f"{paced:g}", "chars": round(paced * chars_per_second),
         "max_characters": max_characters,
-        "HINGLISH": T.HINGLISH, "BANNED": ", ".join(banned_words()),
+        "HINGLISH": T.HINGLISH, "BANNED": ", ".join(banned_words()), "target": target, "low": low, "high": high,
         "n_label": "window number" if scenes else "marker number",
         "first_rule": FIRST_RULE_SCENES if scenes else FIRST_RULE_FULL,
         "window_list": window_list,
@@ -451,10 +493,77 @@ def build_prompt(mode: str, *, channel: str, title: str, first: int, last: int,
     return fill("\n".join(parts), values)
 
 
+# ------------------------------------------------------------------ rules for one API call
+
+ROLE_API = """ROLE
+You are the writer and the art director for the YouTube channel "{channel}". We turn the novel "{title}" into long
+Hinglish story episodes: a narrator reads Hindi text aloud and a picture stays on screen for every few seconds of
+narration.
+"""
+
+HOW_API = """HOW THIS REQUEST WORKS
+This request is complete in itself; nothing is remembered from earlier requests. The REQUEST section at the end names
+exactly what to return. Return only that, in the block format below, and write nothing outside the block. If the
+answer would get too long, finish the line you are in, close the block with its END line, write on its own line
+>>> MORE c{ex4} IMAGES  and stop: the next request asks for the rest.
+"""
+
+BLOCK_FORMAT_API = """BLOCK FORMAT (a tool reads it; follow it exactly)
+A block starts with the line  ===== BEGIN <KIND> <ID> -> inbox/<file> =====  and ends with  ===== END <KIND> <ID> =====
+  BIBLE {batch}  (extra lines for one chapter: BIBLE {batch}-c{ex4})  -> inbox/bible-{batch}.jsonl
+  IMAGES c{ex4}  -> inbox/c{ex4}.images.jsonl
+Inside a ```jsonl code fence, one JSON object per line, double quotes, no comments, no trailing commas.
+"""
+
+NARRATION_API = """HOW YOU ANSWER
+Return the Hinglish narration of the chapter as plain text: the heading line, then the paragraphs. No code fence, no
+block lines, no notes, no commentary, no picture markers. If your answer gets cut off, the next request asks you to
+continue from the last complete paragraph.
+"""
+
+
+def build_rules(part: str, *, channel: str, title: str, first: int, last: int, paced: float,
+                chars_per_second: float, max_characters: int, chapter: int | None = None,
+                window_count: int | None = None, review: bool = False, target: int = 800, low: int = 640,
+                high: int = 960) -> str:
+    """The rules text of ONE API call, taken from the same sections `build_prompt` uses but without the
+    conversation part ("how we work", "type next"): part is "translate" (the Hinglish narration of a chapter),
+    "bible" (the BIBLE block of a batch) or "images" (the IMAGES block of one chapter, scenes mode).
+    target / low / high: translate.target_words and the band around it (words of the narration)."""
+    from novel.stages import episode_translate as T
+    ex = chapter if chapter is not None else first
+    values = {
+        "channel": channel, "title": title, "first": first, "last": last, "batch": batch_id(first, last),
+        "ex4": f"{ex:04d}", "paced": f"{paced:g}", "chars": round(paced * chars_per_second),
+        "max_characters": max_characters, "HINGLISH": T.HINGLISH, "BANNED": ", ".join(banned_words()),
+        "target": target, "low": low, "high": high,
+        "n_label": "window number", "first_rule": FIRST_RULE_SCENES,
+        "window_list": (f"- chapter {chapter}: {window_count} windows" if chapter is not None else ""),
+    }
+    if part == "translate":
+        narration = PART_A_FULL_TEXT.replace(
+            ' A new name: spell it as it sounds, add it to the BIBLE as a "name" line,\n'
+            "  and keep that spelling everywhere.",
+            " A name that is not in the list: spell it as it sounds\n  and keep that spelling everywhere.").replace(
+            "PART A - THE NARRATION (HINDI block)", "THE NARRATION")
+        assert "BIBLE" not in narration, "the narration rules must not mention the BIBLE"
+        parts = [ROLE_API, narration, NARRATION_API]
+    elif part == "bible":
+        parts = [ROLE_API, HOW_API, BLOCK_FORMAT_API, PART_C + (REVIEW_TASK if review else "")]
+    elif part == "images":
+        scenes_rules = PART_A_SCENES.replace("The attached windows file cuts", "The WINDOWS section of the request cuts")
+        parts = [ROLE_API, HOW_API, BLOCK_FORMAT_API, scenes_rules, PART_B, PART_C, example_block()]
+    else:
+        raise PromptError(f"internal: unknown rules part {part!r}")
+    return fill("\n".join(parts), values)
+
+
 # ------------------------------------------------------------------ generate
 
-def generate(book: str, first: int, last: int, mode: str = "auto", out_dir: Path | None = None) -> dict:
-    """Write the batch folder. Returns a dict describing what was written."""
+def generate(book: str, first: int, last: int, mode: str = "auto", out_dir: Path | None = None,
+             write: bool = True) -> dict:
+    """Write the batch folder. Returns a dict describing what was written (write=False: describes it and
+    writes nothing)."""
     from novel.core import paths, settings
     from novel.stages import episode_scenes as S
 
@@ -491,23 +600,27 @@ def generate(book: str, first: int, last: int, mode: str = "auto", out_dir: Path
     prompt = build_prompt(
         mode, channel=get("channel.name", "") or "", title=title, first=first, last=last, paced=paced,
         chars_per_second=cps, max_characters=int(get("images.max_characters", S.MAX_CHARACTERS)),
-        window_counts={n: len(w) for n, w in per_chapter.items()}, review=review)
+        window_counts={n: len(w) for n, w in per_chapter.items()}, review=review,
+        **translate_band(book))
 
     batch = batch_id(first, last)
     folder = Path(out_dir) if out_dir else book_dir / "gemini" / batch
     src = folder / "sources"
-    src.mkdir(parents=True, exist_ok=True)
+    if write:
+        src.mkdir(parents=True, exist_ok=True)
     files = {"prompt": folder / "prompt.txt",
              "chapters": src / f"chapters-{first}-{last}.txt",
              "bible": src / "bible.txt"}
-    files["prompt"].write_text(prompt, encoding="utf-8")
-    files["chapters"].write_text(english, encoding="utf-8")
-    files["bible"].write_text(bible, encoding="utf-8")
+    if write:
+        files["prompt"].write_text(prompt, encoding="utf-8")
+        files["chapters"].write_text(english, encoding="utf-8")
+        files["bible"].write_text(bible, encoding="utf-8")
     win_file = src / f"windows-{first}-{last}.txt"
     if mode == "scenes":
-        win_file.write_text(windows_text(per_chapter), encoding="utf-8")
+        if write:
+            win_file.write_text(windows_text(per_chapter), encoding="utf-8")
         files["windows"] = win_file
-    elif win_file.exists():
+    elif write and win_file.exists():
         win_file.unlink()                                   # derived file of an earlier scenes run
     meta = {
         "batch": batch, "book": book, "mode": mode, "first": first, "last": last,
@@ -518,8 +631,9 @@ def generate(book: str, first: int, last: int, mode: str = "auto", out_dir: Path
         "windows": {str(n): len(w) for n, w in per_chapter.items()},
         "hindi_sha256": shas,
     }
-    (folder / "batch.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if write:
+        (folder / "batch.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     files["batch.json"] = folder / "batch.json"
-    return {"batch": batch, "mode": mode, "folder": folder, "files": files, "prompt": prompt,
+    return {"batch": batch, "mode": mode, "folder": folder, "files": files, "prompt": prompt, "meta": meta,
             "windows": {n: len(w) for n, w in per_chapter.items()}, "review": review, "notes": notes,
             "upload": [files["chapters"], files["bible"]] + ([files["windows"]] if mode == "scenes" else [])}

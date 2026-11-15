@@ -358,9 +358,11 @@ def cdp_url_of(eff: dict) -> str:
     return str((eff.get("chrome") or {}).get("cdp_url") or chromelock.DEFAULT_URL)
 
 
-def runner_env(eff: dict, ep_root=None) -> dict:
+def runner_env(eff: dict, ep_root=None, quality=None) -> dict:
     """The child's environment: ours (FLOW_GEN / FLOW_CHAR pass through untouched) plus the settings.
-    With ep_root, FLOW_PLAN_BASE tells the runner where the plan's relative paths start."""
+    With ep_root, FLOW_PLAN_BASE tells the runner where the plan's relative paths start.
+    quality: "1K" or "2K" forces the download size for this run (None = images.quality). 2K means the runner's
+    own default, so FLOW_QUALITY is left out (a forced 2K also removes an inherited FLOW_QUALITY)."""
     env = dict(os.environ)
     if ep_root is not None:
         env["FLOW_PLAN_BASE"] = os.path.abspath(ep_root)
@@ -368,7 +370,10 @@ def runner_env(eff: dict, ep_root=None) -> dict:
     env["FLOW_CDP"] = cdp_url_of(eff)
     if img.get("flow_model"):
         env["FLOW_MODEL"] = str(img["flow_model"])
-    if str(img.get("quality") or "").upper() == "1K" and "FLOW_QUALITY" not in env:
+    q = str(quality if quality is not None else (img.get("quality") or "")).upper()
+    if quality is not None and q == "2K":
+        env.pop("FLOW_QUALITY", None)
+    if q == "1K" and "FLOW_QUALITY" not in env:
         env["FLOW_QUALITY"] = "1K"
     if img.get("allow_agent") and "FLOW_ALLOW_AGENT" not in env:
         env["FLOW_ALLOW_AGENT"] = "1"

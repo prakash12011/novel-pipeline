@@ -146,7 +146,7 @@ def build(ep_root: Path, n: int, with_warnings: bool = False) -> Fix:
             lines.append(f"- picture {i}: {narr[:400]}{'...' if len(narr) > 400 else ''}")
         lines += ["", "Send back ONE block, exactly this format and nothing outside it. It holds the CURRENT lines of "
                       "the pictures above; change what the problems require. Keep `n` and `group` ids of the pictures; "
-                      "a group line is included only for a group flagged above (changing it redraws every picture of the group); every `cast` member needs `key`, `var`, `pose`, "
+                      "a group line is included only for a group flagged above (changing it redraws every picture of the group); every `cast` member needs `key`, `var`, `position`, `pose`, "
                       "`hands`, `mood`, `wearing`; `hands` says what the hands hold (empty unless the moment needs "
                       "the item).", "", begin_line("PATCH", n), "```jsonl"]
         lines += [C.dump_line(gl[g]) for g in fx.groups]

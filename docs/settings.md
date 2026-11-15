@@ -82,15 +82,16 @@ Keys marked "Not read" or "Not used" are in the file for later; changing them do
 | `images.max_characters` | `4` | Most named people (with a Flow reference) allowed in one picture. Used when importing and in QA. | default, PC, book, episode |
 | `images.chapters_per_day` | `3` | How many chapters `novel images` takes per run when you do not give `--chapters`. | default, PC, book, episode |
 | `images.max_per_run` | `200` | Most pictures one `novel images` run sends (`--max` overrides). | default, PC, book, episode |
-| `images.batch` | `1` | Prompts sent to Flow side by side (`--batch` overrides). 1 = one at a time. | default, PC, book, episode |
+| `images.batch` | `5` | Prompts sent to Flow side by side, then downloaded together (`--batch` overrides). 1 = one at a time. | default, PC, book, episode |
 | `images.batch_pause` | `45` | Seconds to rest between batches when `images.batch` is more than 1. | default, PC, book, episode |
 | `images.pause` | `3` | Seconds to wait between two pictures. | default, PC, book, episode |
 | `images.chapter_pause` | `300` | Seconds to rest when the run moves on to the next chapter. | default, PC, book, episode |
 | `images.rest_every` | `50` | After this many pictures the run rests for `images.rest` seconds. | default, PC, book, episode |
 | `images.rest` | `120` | Length of that rest, in seconds (0 = never rest). | default, PC, book, episode |
 | `images.wall_cooldown_hours` | `12` | After a Flow stop (limit, CAPTCHA, sign-in) `novel images` refuses to run for this many hours unless you add `--i-checked-flow`. | default, PC, book, episode |
-| `images.quality` | `2K` | `1K` makes smaller, faster pictures that `novel images --upgrade` can improve later. Any other value (`2K`) = the normal size. | default, PC, book, episode |
+| `images.quality` | `1K` | Size Flow downloads each picture in: `1K` (1376x768, the default) or `2K` (2752x1536). The HD step upscales a 1K picture after the Gemini mark is removed, so the video looks the same. `1K` pictures can be upgraded later with `novel images --upgrade`. `2K` can be forced for one run with `novel images --quality 2K`, or for a book or episode in its settings. | default, PC, book, episode |
 | `images.alert_repeat_seconds` | `30` | When a run pauses for you (CAPTCHA, sign-in, limit) the tool beeps, then beeps again every this many seconds until you press a key. 0 = beep once. | default, PC, book, episode |
+| `images.watermark` | `crop` | What to do about the Gemini star Flow stamps in the bottom-right corner of every download. `crop` cuts it off (about a tenth of the picture is lost; today's way). `remove` takes it out with the npm package in `flow/` (`novel clean`), checks the result and crops only the pictures where removal failed (mostly 1376x768 downloads: see "Removing the Gemini mark" in COMMANDS.md). `none` leaves the mark in. Changing it makes chapter videos out of date. | default, PC, book, episode |
 
 ### Video
 
@@ -127,7 +128,15 @@ Keys marked "Not read" or "Not used" are in the file for later; changing them do
 
 | Key | Default | What it does | Layers |
 | --- | --- | --- | --- |
-| `gemini.api_model` | `gemini-3.5-flash-lite` | Gemini model used through your API keys: captions, QA fallback, `novel meta` fallback. | default, PC, book, episode |
+| `gemini.api_model` | `gemini-3.5-flash-lite` | Gemini model used through your API keys: `novel write`, captions, QA fallback, `novel meta` fallback. | default, PC, book, episode |
+| `gemini.chapters_per_run` | `5` | How many chapters one `novel write` run takes (the next chapters of the episode that need work). `--max-chapters` overrides it. | default, PC, book, episode |
+| `gemini.parallel` | `1` | How many chapters `novel write` asks at the same time after the bible call. 1 is the safe choice; imports always happen one at a time. `--parallel` overrides it. | default, PC, book, episode |
+| `gemini.max_attempts_per_block` | `3` | How many times `novel write` asks for one block (the Hindi of a chapter, the bible, the pictures of a chapter, a fix) before it leaves it as it is and goes on. | default, PC, book, episode |
+| `gemini.fallback_models` | `[]` | Other Gemini models, tried in this order when every key is rate-limited for the main model (for example `[gemini-2.5-flash]`). The model that wrote each block is recorded in `progress.json` and in the scene file. | default, PC, book, episode |
+| `gemini.min_seconds_between_calls` | `4` | Pause between two Gemini requests, so a run does not trip the per-minute limit. | default, PC, book, episode |
+| `translate.target_words` | `800` | How many Hindi words one `novel write` narration should have. The rules ask for about this many, and the reply is checked against the band below. | default, PC, book, episode |
+| `translate.words_tolerance` | `0.20` | How far from the target a narration may be: 0.20 with 800 words = 640 to 960 words. A reply outside the band is asked again with its word count; the last attempt is used only if it is within half to one and a half times the target. | default, PC, book, episode |
+| `translate.max_attempts` | `4` | How many times `novel write` asks for the Hindi of one chapter before it gives up on it (the chapter then stays without Hindi). | default, PC, book, episode |
 
 ### Quality check
 

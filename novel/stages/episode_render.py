@@ -35,6 +35,12 @@ from .episode_video import (chapter_title, clean_chapter, frame_stats, logo_laye
                             narration, paste_logo, probe, series_label, title_font_file, title_font_setting)
 
 W, H, FPS = 1920, 1080, 24
+
+
+def CL_mode(ep_root: Path, n: int) -> str:
+    """images.watermark for this chapter: crop (default), remove or none."""
+    from .episode_clean import mode_for
+    return mode_for(ep_root, n)
 LEAD = 1.5            # black, while the first image fades up, before the narration starts
 TAIL = 2.0            # after the narration: the last image holds, then fades to black
 XF_IMAGE = 0.6        # dissolve when the image changes
@@ -262,22 +268,41 @@ def _title_over(frame, t: float):
 # ------------------------------------------------------------------ command
 
 
-def chapter_images(ep_root: Path, n: int, scenes: list, hd: bool = True) -> list[Path]:
-    """One picture per scene: the 1920x1080 chaiNNer copy (images/cNNNN/hd/, made by episode_hd) when it
-    is there and not older than the download, else the mark-free copy from clean_chapter."""
+def chapter_images(ep_root: Path, n: int, scenes: list, hd: bool = True, mode: str | None = None) -> list[Path]:
+    """One picture per scene, for images.watermark `mode` (default: the setting).
+
+    crop (today's way): the 1920x1080 chaiNNer copy (images/cNNNN/hd/, made by episode_hd) when it is there and
+    not older than the download, else the mark-free copy from clean_chapter.
+    remove: the same from the clean/ copies of episode_clean (full frame where the mark was removed, cropped where
+    removal failed its check; either way 16:9, made here when missing or out of date); an hd copy counts only when
+    it is newer than the clean copy and was made in this mode.
+    none: the downloads as they are, with the mark in them (or hd copies made from them)."""
+    from . import episode_clean as CL
+    mode = mode or CL.mode_for(ep_root, n)
     img_dir = ep_root / "images" / f"c{n:04d}"
+    base = {p.name: p for p in CL.clean_chapter(ep_root, n)["paths"]} if mode == "remove" else {}
+    hd_ok = hd and CL.hd_mode(img_dir) == mode          # hd copies made in another mode are not ours
     found, need_clean = {}, False
     for s in scenes:
         name = f"s{s['id']:02d}.jpg"
         made, src = img_dir / "hd" / name, img_dir / f"s{s['id']:02d}-2k.jpg"
-        if hd and made.exists() and (not src.exists() or made.stat().st_mtime >= src.stat().st_mtime):
+        ref = base.get(name, src)                       # what an hd copy was made from: it must not be older
+        if hd_ok and made.exists() and (not ref.exists() or made.stat().st_mtime >= ref.stat().st_mtime):
             found[name] = made
         else:
             need_clean = True
-    clean = {p.name: p for p in clean_chapter(ep_root, n)} if need_clean else {}   # redone only if newer
+    if mode == "crop":
+        if need_clean:
+            CL.discard_remove_copies(ep_root, n)        # clean copies made by `remove` are not today's crop
+        clean = {p.name: p for p in clean_chapter(ep_root, n)} if need_clean else {}   # redone only if newer
+    elif mode == "remove":
+        clean = base
+    else:
+        clean = {f"s{s['id']:02d}.jpg": img_dir / f"s{s['id']:02d}-2k.jpg" for s in scenes}
     out = [found.get(f"s{s['id']:02d}.jpg") or clean[f"s{s['id']:02d}.jpg"] for s in scenes]
     if need_clean:
-        print(f"  chapter {n}: {len(found)} hd pictures, {len(out) - len(found)} cleaned downloads (no hd copy yet)")
+        what = {"crop": "cleaned downloads", "remove": "clean copies", "none": "raw downloads (mark left in)"}[mode]
+        print(f"  chapter {n}: {len(found)} hd pictures, {len(out) - len(found)} {what} (no hd copy yet)")
     return out
 
 
@@ -341,7 +366,8 @@ def render(ep: int, n: int, crf: str, preset: str, workers: int, end: float | No
         # absolute, escaped path plus the bundled fonts folder: nothing depends on ffmpeg's working directory
         sub = "," + C.chapter_ass_filter(ep_root, n, ass)
     nar, pl, title = _plan_title(ep_root, n)
-    images = chapter_images(ep_root, n, nar["scenes"], hd)
+    wm = CL_mode(ep_root, n)
+    images = chapter_images(ep_root, n, nar["scenes"], hd, wm)
 
     total = end if end else pl["total"]
     nframes = round(total * FPS)
@@ -395,7 +421,7 @@ def render(ep: int, n: int, crf: str, preset: str, workers: int, end: float | No
               "has_audio": any(s["codec_type"] == "audio" for s in pi["streams"]),
               "images": len(images), "views": len(pl["views"]),
               "view_seconds": round(sum(v["t1"] - v["t0"] for v in pl["views"]) / len(pl["views"]), 2),
-              "captions": bool(sub), "logo": logo_signature(logo_cfg), "title_font": title["font_setting"], "crf": crf, "preset": preset, "workers": workers, **stats}
+              "captions": bool(sub), "logo": logo_signature(logo_cfg), "title_font": title["font_setting"], "watermark": wm, "crf": crf, "preset": preset, "workers": workers, **stats}
     report["pass"] = (vs["width"], vs["height"]) == (W, H) and abs(secs - total) <= 1 / FPS + 0.05 \
         and report["has_audio"] and stats["jerk"] < 2 and stats["blank_frames"] == 0
     out.with_suffix(".render.json").write_text(json.dumps(report, indent=1), encoding="utf-8")

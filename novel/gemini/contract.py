@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 KINDS = ("BIBLE", "HINDI", "IMAGES", "PATCH")
 JSONL_KINDS = ("BIBLE", "IMAGES", "PATCH")
 TIMES = ("dawn", "day", "dusk", "night")
+WHERES = ("indoor", "outdoor")
+KIND_WHERE = {"interior": "indoor", "exterior": "outdoor"}   # a location kind -> the default `where`
 SHOTS_V2 = ("wide", "establishing", "medium", "over-the-shoulder", "low-angle", "high-angle", "detail")
 ACTION_MIN, ACTION_MAX = 60, 600
 WEARING_VARIANT_AFTER = 6          # the same non-null `wearing` on more images than this: "make a variant"
@@ -134,6 +136,8 @@ class Block:
     batch: str | None = None        # BIBLE: from the id
     batch_range: tuple[int, int] | None = None
     origin: str = "reply"           # reply | inbox
+    begin_idx: int = -1             # 0-based index of the BEGIN line among the reply's lines
+    end_idx: int = -1               # index of the END line; -1 when the block is cut off
 
     @property
     def name(self) -> str:
@@ -224,7 +228,7 @@ def split_reply(text: str) -> Reply:
             if cur is not None:                     # a new BEGIN while one is open: that one was cut off
                 blocks.append(cur)
             cur = Block(kind=mb.group(1).upper(), raw_id=mb.group(2), begin_line=no,
-                        quoted=raw.lstrip().startswith(">"), file_hint=mb.group(3) or None)
+                        quoted=raw.lstrip().startswith(">"), file_hint=mb.group(3) or None, begin_idx=no - 1)
             identify(cur)
             continue
         me = END_RX.match(clean)
@@ -242,6 +246,7 @@ def split_reply(text: str) -> Reply:
                                         f"END line says {kind} {rid}, but the block began {cur.kind} {cur.raw_id}",
                                         excerpt(raw)))
             cur.complete = True
+            cur.end_idx = no - 1
             blocks.append(cur)
             cur = None
             continue
@@ -360,30 +365,14 @@ def _loads(text: str) -> tuple[dict | None, str | None, list[str], int | None]:
     return obj, None, fixes, None
 
 
-def parse_jsonl(lines: list[str], quoted: bool = False) -> tuple[list[Item], list[Issue], list[Issue]]:
-    """JSON objects of a block body, one per line (fences, blank lines and language labels skipped).
-    Repaired silently with a warning: trailing commas, an object pretty-printed over several lines,
-    non-breaking spaces. Never repaired: curly quotes used as JSON quotes."""
-    items: list[Item] = []
-    errs: list[Issue] = []
-    warns: list[Issue] = []
-    nbsp_lines: list[int] = []
+def json_line_events(lines: list[str], quoted: bool = False):
+    """The grouping of a block body into JSON objects, shared by parse_jsonl and drop_unreadable. Yields, in reading
+    order: ("object", first, last, text) for one candidate object (lines first..last re-joined into text),
+    ("error", Issue, first, last) for lines that are not an object (lines first..last), and ("warn", Issue).
+    Fences, blank lines and language labels are skipped; nothing is repaired here (see _loads)."""
     buf: list[str] | None = None
     start = 0
-
-    def finish(text: str, first: int, last: int):
-        obj, err, fixes, col = _loads(text)
-        where = f"{first}" if first == last else f"{first}-{last}"
-        if err:
-            what = f"lines {where}" if first != last else ""
-            errs.append(Issue(first, what, err, excerpt(text, col)))
-            return
-        if first != last:
-            warns.append(Issue(first, "", f"one JSON object was spread over lines {where}; re-joined"))
-        for f in fixes:
-            warns.append(Issue(first, "", f))
-        items.append(Item(first, obj, last))
-
+    nbsp_lines: list[int] = []
     for no, raw in enumerate(lines, 1):
         s = raw
         if quoted:
@@ -396,16 +385,17 @@ def parse_jsonl(lines: list[str], quoted: bool = False) -> tuple[list[Item], lis
             if not st or FENCE_RX.match(st):
                 continue
             if LABEL_RX.match(st):
-                warns.append(Issue(no, "", f"skipped the label line {st!r}"))
+                yield ("warn", Issue(no, "", f"skipped the label line {st!r}"))
                 continue
             if not st.startswith("{"):
-                errs.append(Issue(no, "", "not a JSON object line (every line must start with {)", excerpt(st)))
+                yield ("error", Issue(no, "", "not a JSON object line (every line must start with {)",
+                                      excerpt(st)), no, no)
                 continue
             buf, start = [st], no
         else:
             if FENCE_RX.match(st) or (st.startswith('{"type"') and len(buf) == 1 and buf[0].endswith("}")):
-                errs.append(Issue(start, "", "this object never closes (a quote or brace is missing)",
-                                  excerpt(" ".join(buf))))
+                yield ("error", Issue(start, "", "this object never closes (a quote or brace is missing)",
+                                      excerpt(" ".join(buf))), start, no - 1)
                 buf = None
                 if FENCE_RX.match(st):
                     continue
@@ -417,14 +407,106 @@ def parse_jsonl(lines: list[str], quoted: bool = False) -> tuple[list[Item], lis
         if depth > 0:
             continue
         buf = None
-        finish(text, start, no)
+        yield ("object", start, no, text)
     if buf is not None:
-        errs.append(Issue(start, "", "this object never closes before the end of the block (cut off?)",
-                          excerpt(" ".join(buf))))
+        yield ("error", Issue(start, "", "this object never closes before the end of the block (cut off?)",
+                              excerpt(" ".join(buf))), start, len(lines))
     if nbsp_lines:
         shown = ", ".join(map(str, nbsp_lines[:8])) + (" ..." if len(nbsp_lines) > 8 else "")
-        warns.append(Issue(nbsp_lines[0], "", f"non-breaking spaces replaced (lines {shown})"))
+        yield ("warn", Issue(nbsp_lines[0], "", f"non-breaking spaces replaced (lines {shown})"))
+
+
+def parse_jsonl(lines: list[str], quoted: bool = False) -> tuple[list[Item], list[Issue], list[Issue]]:
+    """JSON objects of a block body, one per line (fences, blank lines and language labels skipped).
+    Repaired silently with a warning: trailing commas, an object pretty-printed over several lines,
+    non-breaking spaces. Never repaired: curly quotes used as JSON quotes."""
+    items: list[Item] = []
+    errs: list[Issue] = []
+    warns: list[Issue] = []
+    for ev in json_line_events(lines, quoted):
+        if ev[0] == "object":
+            _, first, last, text = ev
+            obj, err, fixes, col = _loads(text)
+            where = f"{first}" if first == last else f"{first}-{last}"
+            if err:
+                what = f"lines {where}" if first != last else ""
+                errs.append(Issue(first, what, err, excerpt(text, col)))
+                continue
+            if first != last:
+                warns.append(Issue(first, "", f"one JSON object was spread over lines {where}; re-joined"))
+            for f in fixes:
+                warns.append(Issue(first, "", f))
+            items.append(Item(first, obj, last))
+        elif ev[0] == "error":
+            errs.append(ev[1])
+        else:
+            warns.append(ev[1])
     return items, errs, warns
+
+
+@dataclass
+class Dropped:
+    """What drop_unreadable took out of one IMAGES block body."""
+    kept: list[str] = field(default_factory=list)      # the raw lines to keep
+    bad: list[str] = field(default_factory=list)       # the raw lines that are not valid JSON (as sent)
+    issues: list[Issue] = field(default_factory=list)  # one per dropped object or line
+    windows: list[int] = field(default_factory=list)   # window numbers read from the bad lines ("n":N)
+    groups: list[str] = field(default_factory=list)    # ids of dropped group lines that could be read
+    held: list[int] = field(default_factory=list)      # windows of valid image lines held back (group dropped)
+    objects: int = 0                                   # valid objects kept (held-back ones not counted)
+
+
+def drop_unreadable(lines: list[str], quoted: bool = False) -> Dropped:
+    """Take out of a block body every line that is not valid JSON after _loads' repairs (the same repairs
+    parse_jsonl makes). A valid image line whose group line was dropped is held back too: the importer would
+    reject the whole block for an unknown group. The lines that are kept are returned unchanged."""
+    n = len(lines)
+    bad_mask, held_mask = [False] * n, [False] * n
+    out = Dropped()
+    valid_groups: set[str] = set()
+    images: list[tuple[int, int, str, object]] = []
+
+    def mark(mask: list[bool], first: int, last: int) -> None:
+        for i in range(first - 1, last):
+            mask[i] = True
+
+    for ev in json_line_events(lines, quoted):
+        if ev[0] == "object":
+            _, first, last, text = ev
+            obj, err, _, col = _loads(text)
+            if err:
+                out.issues.append(Issue(first, "", err, excerpt(text, col)))
+                mark(bad_mask, first, last)
+                continue
+            out.objects += 1
+            if obj.get("type") == "group":
+                valid_groups.add(str(obj.get("group")))
+            elif obj.get("type") == "image":
+                images.append((first, last, str(obj.get("group")), obj.get("n")))
+        elif ev[0] == "error":
+            out.issues.append(ev[1])
+            mark(bad_mask, ev[2], ev[3])
+    bad_text = " ".join(line for line, m in zip(lines, bad_mask) if m)
+    for m in re.finditer(r'"type"\s*:\s*"group"[^{}]*?"group"\s*:\s*"([^"]+)"', bad_text):
+        if m.group(1) not in valid_groups and m.group(1) not in out.groups:
+            out.groups.append(m.group(1))
+    for first, last, group, num in images:
+        if group in out.groups and group not in valid_groups:
+            mark(held_mask, first, last)
+            out.held.append(num)
+            out.objects -= 1
+    for m in re.finditer(r'"n"\s*:\s*(\d+)', bad_text):
+        w = int(m.group(1))
+        if w not in out.windows:
+            out.windows.append(w)
+    out.windows.sort()
+    out.held.sort()
+    for i, line in enumerate(lines):
+        if bad_mask[i]:
+            out.bad.append(line)
+        elif not held_mask[i]:
+            out.kept.append(line)
+    return out
 
 
 # ------------------------------------------------------------------ IMAGES / PATCH lines
@@ -456,6 +538,20 @@ def _nonempty(v) -> bool:
 
 def _clean_text(v: str) -> str:
     return " ".join(str(v).translate(NBSP).split())
+
+
+# What the scene writer sometimes puts in `others` when nobody else is in the picture. Compared after trimming,
+# lower-casing and dropping one trailing full stop.
+NO_OTHERS = frozenset({"empty", "none", "no one", "nobody", "n/a", "na", "-", "nil", "no others",
+                       "no other people"})
+
+
+def no_others(text) -> bool:
+    """True when an `others` value means "nobody else": the placeholder words above, or nothing."""
+    s = " ".join(str(text or "").split()).lower()
+    if s.endswith("."):
+        s = s[:-1].rstrip()
+    return s == "" or s in NO_OTHERS
 
 
 def _text_problems(value: str, ctx: ChapterCtx) -> list[str]:
@@ -492,8 +588,17 @@ def _close(key: str, pool) -> str:
     return f" (did you mean {', '.join(near)}?)" if near else ""
 
 
-def check_group(obj: dict, ctx: ChapterCtx) -> tuple[dict | None, list[tuple[str, str]]]:
+def kind_where(ctx: ChapterCtx, loc) -> str | None:
+    """indoor / outdoor from the location's `kind` (interior / exterior), or None when the kind says neither."""
+    return KIND_WHERE.get(str((ctx.locations.get(loc) or {}).get("kind") or "").strip().lower())
+
+
+def check_group(obj: dict, ctx: ChapterCtx) -> tuple[dict | None, list[tuple[str, str]], list[str]]:
+    """(normalised line, errors as (field, message), warnings). `where` is required; a line without it
+    (an older reply or file) falls back to the location's kind with a warning, and is an error only when
+    the kind does not say either."""
     errs: list[tuple[str, str]] = []
+    warns: list[str] = []
     gid = obj.get("group")
     if not (_nonempty(gid) and " " not in gid.strip()):
         errs.append(("group", "missing or not a short id like g01"))
@@ -507,6 +612,24 @@ def check_group(obj: dict, ctx: ChapterCtx) -> tuple[dict | None, list[tuple[str
     if _nonempty(loc) and loc not in ctx.locations:
         errs.append(("loc", f"location '{loc}' is not in the location registry{_close(loc, ctx.locations)}; "
                             f"add it with a BIBLE location line first"))
+    where = obj.get("where")
+    by_kind = kind_where(ctx, loc) if _nonempty(loc) else None
+    need = 'write "where": "indoor" or "outdoor"'
+    if where is None or (isinstance(where, str) and not where.strip()):
+        if by_kind:
+            where = by_kind
+            warns.append(f"where is missing: using '{by_kind}' from the location's kind "
+                         f"('{ctx.locations[loc].get('kind')}'); every group needs \"where\": \"indoor\" or "
+                         f"\"outdoor\"")
+        elif _nonempty(loc) and loc in ctx.locations:
+            errs.append(("where", f"missing, and the location '{loc}' has kind "
+                                  f"'{ctx.locations[loc].get('kind') or '-'}', which does not say: {need}"))
+        else:
+            errs.append(("where", f"missing: {need}"))
+    elif not (_is_text(where) and where.strip().lower() in WHERES):
+        errs.append(("where", f"{where!r} is not one of {'|'.join(WHERES)}"))
+    else:
+        where = where.strip().lower()
     present = obj.get("present")
     if not (isinstance(present, list) and all(_is_text(p) for p in present)):
         errs.append(("present", "must be a list of character keys"))
@@ -520,15 +643,65 @@ def check_group(obj: dict, ctx: ChapterCtx) -> tuple[dict | None, list[tuple[str
     for f in ("light", "staging", "weather"):
         if _nonempty(obj.get(f)):
             errs += [(f, m) for m in _text_problems(obj[f], ctx)]
-    extra = set(obj) - {"type", "group", "loc", "time", "light", "weather", "present", "staging"}
+    extra = set(obj) - {"type", "group", "loc", "time", "where", "light", "weather", "present", "staging"}
     if errs:
-        return None, errs
-    norm = {"type": "group", "group": gid.strip(), "loc": loc, "time": t.strip().lower(),
+        return None, errs, []
+    norm = {"type": "group", "group": gid.strip(), "loc": loc, "time": t.strip().lower(), "where": where,
             "light": _clean_text(obj["light"]), "weather": _clean_text(w) if _nonempty(w) else "",
             "present": list(dict.fromkeys(present)), "staging": _clean_text(obj["staging"])}
     if extra:
         norm["_extra"] = sorted(extra)
-    return norm, errs
+    return norm, errs, warns
+
+
+# Word lists of the light / time / where check (warnings only: they look for OBVIOUS contradictions).
+SUN_WORDS = re.compile(r"(?<![a-z])(sun|sunlight|sunlit|sunshine|sunny|sunbeams?|sunrays?|daylight|midday|noon|"
+                       r"afternoon|blue sky)(?![a-z])")
+NIGHT_SKY_WORDS = re.compile(r"(?<![a-z])(moon|moonlight|moonlit|moonbeams?|starlight|starlit|starry|stars)(?![a-z])")
+LAMP_WORDS = re.compile(r"(?<![a-z])(lamp|lamps|lamplight|lantern|lanterns|candle|candles|candlelight|torch|torches|"
+                        r"firelight|fire|gaslight|gas light)(?![a-z])")
+OPENING_WORDS = re.compile(r"(?<![a-z])(window|windows|skylight|doorway|door|open|arch|balcony|roof|glass)(?![a-z])")
+SKY_WORDS = re.compile(r"(?<![a-z])(sky|overcast|cloud|clouds|cloudy|bright|natural|grey|gray|morning)(?![a-z])")
+NEGATION = re.compile(r"(?<![a-z])(no|not|without|never)\s+(?:\w+\s+){0,2}$")
+
+
+def _hits(rx: re.Pattern, text: str) -> list[str]:
+    """Words of `rx` in `text` that no 'no / not / without' (up to two words before) negates."""
+    return [m.group(1) for m in rx.finditer(text) if not NEGATION.search(text[:m.start()])]
+
+
+def setting_problems(g: dict) -> list[str]:
+    """Warnings about one group's `light` against its `time` and `where`: sun words at night; moon or star
+    words by day; moon or star words indoors with no window, door or opening in the light or the staging; lamps
+    as the only light outdoors by day."""
+    light = str(g.get("light") or "").lower()
+    stage = str(g.get("staging") or "").lower()
+    time, where, gid = g.get("time"), g.get("where"), g.get("group")
+    out = []
+    sun, sky_night, lamps = _hits(SUN_WORDS, light), _hits(NIGHT_SKY_WORDS, light), _hits(LAMP_WORDS, light)
+    if time == "night" and sun:
+        out.append(f"group {gid}: the light mentions '{sun[0]}' but the time is night")
+    if time == "day" and sky_night:
+        out.append(f"group {gid}: the light mentions '{sky_night[0]}' but the time is day")
+    if where == "indoor" and sky_night and not (OPENING_WORDS.search(light) or OPENING_WORDS.search(stage)):
+        out.append(f"group {gid}: the light mentions '{sky_night[0]}' indoors, and no window or opening is "
+                   f"mentioned in the light or the staging")
+    if where == "outdoor" and time == "day" and lamps and not sun and not SKY_WORDS.search(light):
+        out.append(f"group {gid}: the only light outdoors by day is '{lamps[0]}': is the sun or the sky meant?")
+    return out
+
+
+def setting_moves(groups_in_order: list[dict]) -> list[str]:
+    """Notes for two consecutive groups in the same location at the same time of day but with a different
+    `where`: a human should see the move through the door."""
+    out = []
+    for a, b in zip(groups_in_order, groups_in_order[1:]):
+        if a.get("loc") and a.get("loc") == b.get("loc") and a.get("time") == b.get("time") \
+                and a.get("where") and b.get("where") and a.get("where") != b.get("where"):
+            out.append(f"note: group {b['group']} follows group {a['group']} in the same place ({a['loc']}) at the "
+                       f"same time ({a['time']}) but moves from {a['where']} to {b['where']}: check the move "
+                       f"through the door")
+    return out
 
 
 def attached(ctx: ChapterCtx, key: str, var: str) -> bool:
@@ -590,6 +763,11 @@ def check_image(obj: dict, ctx: ChapterCtx) -> tuple[dict | None, list[tuple[str
                 errs.append((f"{tag}.var", str(e)))
         if not _nonempty(c.get("hands")):
             errs.append((f"{tag}.hands", "missing or empty: say what the hands do, e.g. \"empty, at her sides\""))
+        if not _nonempty(c.get("position")):
+            errs.append((f"{tag}.position", "missing or empty: say where this person is in the frame and the place, "
+                                            "e.g. \"left foreground, by the door\" (two people never share a position)"))
+        elif _text_problems(c["position"], ctx):
+            errs += [(f"{tag}.position", m) for m in _text_problems(c["position"], ctx)]
         for f in ("pose", "mood"):
             if f not in c or not _is_text(c.get(f)):
                 errs.append((f"{tag}.{f}", "missing" if f not in c else "must be text"))
@@ -601,9 +779,18 @@ def check_image(obj: dict, ctx: ChapterCtx) -> tuple[dict | None, list[tuple[str
             if _nonempty(c.get(f)):
                 errs += [(f"{tag}.{f}", m) for m in _text_problems(c[f], ctx)]
         norm_cast.append({"key": key, "var": var if _nonempty(var) else "base",
+                          "position": _clean_text(c.get("position") or ""),
                           "pose": _clean_text(c.get("pose") or ""), "hands": _clean_text(c.get("hands") or ""),
                           "mood": _clean_text(c.get("mood") or ""),
                           "wearing": _clean_text(wearing) if _nonempty(wearing) else None})
+    shared: dict[str, str] = {}
+    for c in norm_cast:
+        p = c["position"].lower().strip(" .,;")
+        if p and p in shared:
+            errs.append(("cast", f"{c['key']} and {shared[p]} share the position '{c['position']}': two people never "
+                                 f"share a position"))
+        elif p:
+            shared[p] = c["key"]
     if n_attached > ctx.max_characters:
         errs.append(("cast", f"{n_attached} attached characters (with a Flow reference); at most "
                              f"{ctx.max_characters} (text-only tier-3 people do not count)"))
@@ -620,7 +807,7 @@ def check_image(obj: dict, ctx: ChapterCtx) -> tuple[dict | None, list[tuple[str
     action, swapped = replace_keys(action, ctx)
     if swapped:
         warns.append("action: bible keys replaced by display names (" + ", ".join(swapped) + ")")
-    others = _clean_text(others)
+    others = "" if no_others(others) else _clean_text(others)
     others, swapped = replace_keys(others, ctx)
     if swapped:
         warns.append("others: bible keys replaced by display names (" + ", ".join(swapped) + ")")
@@ -644,8 +831,8 @@ def check_line(obj: dict, ctx: ChapterCtx):
     """-> (kind 'group'|'image'|None, normalised, errors[(field,msg)], warnings[str])."""
     t = obj.get("type")
     if t == "group":
-        norm, errs = check_group(obj, ctx)
-        return "group", norm, errs, []
+        norm, errs, warns = check_group(obj, ctx)
+        return "group", norm, errs, warns
     if t == "image":
         return ("image",) + check_image(obj, ctx)
     hint = " (character, variant, location, name and flag lines go in a BIBLE block)" \
@@ -664,6 +851,23 @@ def line_label(obj: dict) -> str:
 
 # ------------------------------------------------------------------ the whole chapter
 
+def cast_present_errors(groups: dict, images: dict) -> list[tuple[int, str]]:
+    """[(image n, message)]: everyone in a picture's cast must be listed in its group's `present` first (the model
+    names who is involved in the group, then draws them). Images whose group is unknown are left to the caller."""
+    out = []
+    for n in sorted(images):
+        im = images[n]
+        g = groups.get(im.get("group"))
+        if g is None:
+            continue
+        for c in im.get("cast") or []:
+            if c["key"] not in (g.get("present") or []):
+                out.append((n, f"{c['key']} is in the cast but not in group {im['group']}'s \"present\": list every "
+                               f"named character who is in the place during the group in \"present\" first (add "
+                               f"{c['key']} there, or take them out of the cast)"))
+    return out
+
+
 def chapter_warnings(groups: dict, images: dict, ctx: ChapterCtx) -> list[str]:
     """Warnings over a complete chapter: cast outside `present`, `wearing` habit, shot variety, prop habit."""
     warns = []
@@ -675,6 +879,29 @@ def chapter_warnings(groups: dict, images: dict, ctx: ChapterCtx) -> list[str]:
         for c in im["cast"]:
             if c["key"] not in g["present"]:
                 warns.append(f"image {im['n']}: {c['key']} is in the cast but not in group {im['group']}'s present")
+    drawn: dict[str, set] = {}
+    for im in order:
+        drawn.setdefault(im["group"], set()).update(c["key"] for c in im["cast"])
+    for gid, g in groups.items():
+        if gid not in drawn:
+            continue
+        for key in g.get("present") or []:
+            if key not in drawn[gid]:
+                warns.append(f"group {gid}: {key} is listed in \"present\" but appears in none of the group's "
+                             f"images (involved but never drawn): take them out of \"present\" or put them in a picture")
+    seen: list[dict] = []
+    for im in order:
+        g = groups.get(im["group"])
+        if g is not None and (not seen or seen[-1]["group"] != g["group"]):
+            seen.append(g)
+    for g in seen:
+        by_kind = kind_where(ctx, g.get("loc"))
+        if by_kind and g.get("where") and by_kind != g["where"]:
+            warns.append(f"group {g['group']}: where is '{g['where']}' but the location '{g['loc']}' has kind "
+                         f"'{ctx.locations[g['loc']].get('kind')}' (fine for a yard, porch or doorway; otherwise "
+                         f"check it)")
+        warns += setting_problems(g)
+    warns += setting_moves(seen)
     wearing: dict[tuple[str, str], list[int]] = {}
     for im in order:
         for c in im["cast"]:

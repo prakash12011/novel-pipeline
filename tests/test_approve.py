@@ -255,14 +255,49 @@ def test_old_absolute_plan_is_kept_working_and_made_portable_on_the_next_approva
     assert [r["out"] for r in F.classify(F.load_plan(plan_file), ep(tide)) if r["id"].startswith("c0001")] ==         [r["out"] for r in rows]
 
 
+def _images_settings(bd, **images):
+    """Override the book's images settings (the runner's pauses are set to 0 so tests do not sleep)."""
+    import yaml
+    doc = yaml.safe_load((bd / "book.yaml").read_text(encoding="utf-8")) or {}
+    doc.setdefault("images", {}).update(images)
+    (bd / "book.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
 def test_approved_plan_works_after_the_data_folder_moves(tide, capsys, tmp_path, monkeypatch):
     """Approve here, move the whole data folder somewhere else, run `novel images` there: no re-approving."""
     import yaml
-    from novel.commands import images_cmd
     passing(tide, 1)
     approve(capsys, "--chapters", "1")
+    _images_settings(tide, batch=1, batch_pause=0)
     n = counts(tide)[1]
+    moved, code = _move_and_run_images(tide, capsys, tmp_path, monkeypatch)
+    assert code == 0
+    made = sorted((moved / "images" / "c0001").glob("s*-2k.jpg"))
+    assert len(made) == n and all(p.stat().st_size > 50000 for p in made)
+    assert (moved / "flow" / "journal.jsonl").exists()
+    assert not (tmp_path / "data").exists()
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
+def test_batch_of_five_works_after_the_data_folder_moves(tide, capsys, tmp_path, monkeypatch):
+    """The default batch (images.batch 5) with relative plan paths: pictures are sent 5 at a time, then saved."""
+    passing(tide, 1)
+    approve(capsys, "--chapters", "1")
+    _images_settings(tide, batch=5, batch_pause=0)
+    n = counts(tide)[1]
+    moved, code = _move_and_run_images(tide, capsys, tmp_path, monkeypatch)
+    assert code == 0
+    made = sorted((moved / "images" / "c0001").glob("s*-2k.jpg"))
+    assert len(made) == n and all(p.stat().st_size > 50000 for p in made)
+    calls = (moved / "flow" / "calls.log").read_text(encoding="utf-8").splitlines()
+    assert len(calls) == n and all(c.endswith("--batch") for c in calls)   # every picture went through batch mode
+
+
+def _move_and_run_images(tide, capsys, tmp_path, monkeypatch):
+    """The plan is approved in `tide`: move the data folder elsewhere, run `novel images` there. (moved, code)"""
+    import yaml
+    from novel.commands import images_cmd
     home = tmp_path / "home"
     new_data = tmp_path / "other pc" / "NovelData"
     new_data.parent.mkdir()
@@ -276,11 +311,7 @@ def test_approved_plan_works_after_the_data_folder_moves(tide, capsys, tmp_path,
     code = images_cmd.main(["--book", "tide", "--ep", "1", "--chapters", "1"], inject={"answers": lambda u: "Chrome/130"},
                            ask=lambda p: pytest.fail(p), interactive=False)
     capsys.readouterr()
-    assert code == 0
-    made = sorted((moved / "images" / "c0001").glob("s*-2k.jpg"))
-    assert len(made) == n and all(p.stat().st_size > 50000 for p in made)
-    assert (moved / "flow" / "journal.jsonl").exists()
-    assert not (tmp_path / "data").exists()
+    return moved, code
 
 
 def test_plan_merges_two_approvals_and_reapproval_replaces_only_its_chapter(tide, capsys):
@@ -414,7 +445,8 @@ def test_sheet_for_a_v2_chapter_with_missing_pictures(tide, capsys):
     assert code == 0 and "contact.html" in out
     page = (d / "contact.html").read_text(encoding="utf-8")
     doc = json.loads(S.scenes_path(ep(tide), 1).read_text(encoding="utf-8"))
-    assert page.count("<h2>") == 2 and "Group g01 · Harbour Quay" in page and "Group g02" in page
+    assert page.count("<h2>") == 2 and "Group g01 · Harbour Quay · outdoor · dawn" in page and "Group g02" in page
+    assert page.count("outdoor · dawn</h2>") == 2
     assert 'src="s01-2k.jpg"' in page and ":" not in page.split('src="')[1].split('"')[0]    # relative, not absolute
     assert page.count("not generated") == len(doc["scenes"]) - 1 and "s02 not generated" in page
     assert "Flow used: Maren Vale" in page and "prompt used 100%" in page

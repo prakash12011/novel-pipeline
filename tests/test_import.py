@@ -82,12 +82,21 @@ def say(out):
 
 # ---------------------------------------------------------------- reply builders
 
-def cast(key, var="base", hands="empty, at the sides", pose="standing", mood="calm", wearing=None):
-    return {"key": key, "var": var, "pose": pose, "hands": hands, "mood": mood, "wearing": wearing}
+POSITION = {"maren_vale": "left foreground, by the rail", "tobias_reed": "right middle distance, on the quay",
+            "old_harl": "centre background, by his boat"}
 
 
-def group(gid="g01", loc="harbour_quay", present=("maren_vale", "tobias_reed", "old_harl"), **kw):
-    g = {"type": "group", "group": gid, "loc": loc, "time": "dawn", "light": "pale light from the left",
+def cast(key, var="base", hands="empty, at the sides", pose="standing", mood="calm", wearing=None, position=None):
+    return {"key": key, "var": var, "position": position or POSITION.get(key, f"middle distance near the {key}"),
+            "pose": pose, "hands": hands, "mood": mood, "wearing": wearing}
+
+
+WHERE = {"harbour_quay": "outdoor", "net_loft": "indoor"}
+
+
+def group(gid="g01", loc="harbour_quay", present=("maren_vale", "tobias_reed"), **kw):
+    g = {"type": "group", "group": gid, "loc": loc, "time": "dawn", "where": WHERE.get(loc, "indoor"),
+         "light": "pale light from the left",
          "weather": "clear", "present": list(present),
          "staging": "Maren at the quay edge on the left, Tobias walking in from the right, Harl by his boat"}
     g.update(kw)
@@ -438,7 +447,10 @@ def test_missing_hands_and_pose(book, monkeypatch, capsys):
 def test_attached_limit_ignores_text_only_people(tmp_path, monkeypatch, capsys):
     bd = setup_book(tmp_path, monkeypatch, settings={"images": {"max_characters": 2}})
     three = [cast("maren_vale"), cast("tobias_reed"), cast("old_harl")]
-    code, out = _with(bd, monkeypatch, capsys, lambda L: L[1].update(cast=three))
+    def three_present(L):
+        L[0]["present"] = ["maren_vale", "tobias_reed", "old_harl"]
+        L[1].update(cast=three)
+    code, out = _with(bd, monkeypatch, capsys, three_present)
     assert code == 0, out                                    # old_harl is tier 3, text only: not counted
     (bd / "book.yaml").write_text(yaml.safe_dump({"book": {"title": "Tide Tales"},
                                                   "images": {"max_characters": 1}}), encoding="utf-8")
@@ -482,19 +494,32 @@ def test_chapter_warnings(tmp_path, monkeypatch, capsys):
     bd = setup_book(tmp_path, monkeypatch)
     c = counts(bd)
     run(monkeypatch, capsys, bible_reply())
-    lines = [group("g01", present=("maren_vale",))]
+    lines = [group("g01", present=("maren_vale", "tobias_reed"))]
     for n in range(1, c[1] + 1):
         lines.append(image(n, "g01", shot="medium",
-                           cast_=[cast("maren_vale", hands="holding her lantern up", wearing="a red scarf")]
-                           + ([cast("tobias_reed")] if n == 1 else [])))
+                           cast_=[cast("maren_vale", hands="holding her lantern up", wearing="a red scarf")]))
     code, out = run(monkeypatch, capsys, block("IMAGES", "c0001", lines))
     assert code == 0, out
-    assert "tobias_reed is in the cast but not in group g01's present" in out
+    assert 'group g01: tobias_reed is listed in "present" but appears in none of the group\'s images' in out
     assert "shot 'medium' three times in a row" in out
     assert c[1] == 7                                         # the fixture's chapter 1 has 7 windows
     assert "maren_vale wears \"a red scarf\" on 7 images" in out and "make a variant" in out
     assert "group g01: 'medium' on 7 of 7 images (at most a third)" in out
     assert "maren_vale: a signature prop (lantern) is in the hands" in out
+
+
+def test_empty_others_word_is_stored_as_blank(book, monkeypatch, capsys):
+    c = counts(book)
+    code, out = run(monkeypatch, capsys, bible_reply())
+    assert code == 0, out
+    lines = chapter_lines(c[1], 1)
+    for i, line in enumerate(lines):
+        line["others"] = ["empty", "None.", "n/a", "no one", "Nobody"][i % 5]
+    code, out = run(monkeypatch, capsys, block("IMAGES", "c0001", lines))
+    assert code == 0, out
+    assert "others:" not in out                              # accepted with no warning
+    doc = json.loads(S.scenes_path(ep(book), 1).read_text(encoding="utf-8"))
+    assert doc["scenes"] and all(s["others"] == "" for s in doc["scenes"])
 
 
 def test_wearing_warning_needs_more_than_six(monkeypatch):

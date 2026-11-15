@@ -3,7 +3,8 @@ copyright disclaimer, with chapter markers and timestamps. Driven by `novel buil
 
 A chapter is rendered again only when it has no video yet, its video has no subtitles,
 its last render failed a check, its logo settings changed, or its text, narration, timing,
-scenes, captions or hd pictures changed after the render. Everything else is reused, so
+scenes, captions, hd pictures or (images.watermark: remove) clean pictures changed after the render, or its
+images.watermark setting changed. Everything else is reused, so
 re-running after a fix is cheap.
 
     novel build --ep 1 --chapters 1-5           # -> E001-c1-5.mp4
@@ -51,6 +52,10 @@ def why_render(ep_root: Path, n: int) -> str | None:
     from .episode_video import title_font_setting
     if r.get("title_font", DEFAULT_TITLE_FONT) != title_font_setting(E.cfg(ep, n)):    # old reports: the default
         return "title font setting changed"
+    from .episode_clean import mode_for
+    wm = mode_for(ep_root, n)
+    if r.get("watermark", "crop") != wm:                                      # old reports: crop, today's way
+        return "watermark setting changed"
     made = mp4.stat().st_mtime
     name = f"{n:05d}"
     for rel in (f"hindi/{name}.txt", f"audio/{name}.mp3", f"timing/{name}.json",
@@ -61,6 +66,10 @@ def why_render(ep_root: Path, n: int) -> str | None:
     for img in (ep_root / "images" / f"c{n:04d}" / "hd").glob("s*.jpg"):
         if img.stat().st_mtime > made:
             return f"hd picture {img.name} changed"
+    if wm == "remove":
+        for img in (ep_root / "images" / f"c{n:04d}" / "clean").glob("s[0-9]*.jpg"):
+            if img.stat().st_mtime > made:
+                return f"clean picture {img.name} changed"
     return None
 
 
@@ -130,6 +139,9 @@ def missing_inputs(ep_root: Path, ep: int, n: int, *, captions: bool = True) -> 
                              f"GEMINI_API_KEY in {secrets_path()} to make them", f"novel captions {c}   (needs a Gemini key)"))
     if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
         out.append(_item("ffmpeg", "ffmpeg / ffprobe are not on PATH", "install ffmpeg, then run: novel doctor"))
+    from . import episode_clean as CL
+    if CL.mode_for(ep_root, n) == "remove" and (why := CL.tool_missing()):
+        out.append(_item("clean-tool", why, "cd flow && npm ci   (or set images.watermark: crop)"))
     try:
         from .episode_video import logo_signature
         logo_signature(E.cfg(ep, n)["video"]["logo"])

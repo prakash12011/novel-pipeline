@@ -177,7 +177,9 @@ def add(argv) -> int:
 
     print(f"Created episode E{n:03d}: chapters {start}-{end} ({count} files) in {ep_root}")
     print(f"'{book}' episode {n} is now current.\n")
-    print("Next step:")
+    print("Next step (the Gemini API writes the Hindi, the bible and the picture lines):")
+    print("  novel write")
+    print("Or by hand, pasting into the Gemini app:")
     print(f"  novel prompt --chapters {start}-{end} --copy")
     return 0
 

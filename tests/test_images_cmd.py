@@ -522,3 +522,75 @@ def test_alert_rings_when_the_run_pauses(env, capsys, monkeypatch):
     r = run(capsys, "--chapters", "1", replies=["s"], interactive=True, inject={"beep": lambda: rang.append(1)})
     assert "FLOW STOPPED" in r.out
     assert len(rang) == 1                 # answered at once: one alert, and it is over
+
+
+# ---------------------------------------------------------------- download size: 1K by default, --quality, the book setting
+
+def record_env(monkeypatch):
+    """Every environment the runner is started with (the real runner is never started: FLOW_GEN is a fake)."""
+    seen = []
+    real = F.runner_env
+
+    def rec(*a, **k):
+        e = real(*a, **k)
+        seen.append(e)
+        return e
+    monkeypatch.setattr(F, "runner_env", rec)
+    monkeypatch.delenv("FLOW_QUALITY", raising=False)
+    return seen
+
+
+def test_default_download_size_is_1k(env, capsys, monkeypatch):
+    seen = record_env(monkeypatch)
+    monkeypatch.setenv("FLOW_GEN", str(FAKE_GEN_FRONT))
+    r = run(capsys, "--chapters", "1")
+    assert r.code == 0, r.out + r.err
+    assert seen and seen[0]["FLOW_QUALITY"] == "1K"
+    assert "Download size: 1K (setting images.quality; use --quality 2K to force 2K)" in r.out
+
+
+def test_quality_2k_flag_does_not_set_flow_quality(env, capsys, monkeypatch):
+    seen = record_env(monkeypatch)
+    monkeypatch.setenv("FLOW_GEN", str(FAKE_GEN_FRONT))
+    r = run(capsys, "--chapters", "1", "--quality", "2K")
+    assert r.code == 0, r.out + r.err
+    assert seen and "FLOW_QUALITY" not in seen[0]
+    assert "Download size: 2K (forced by --quality)" in r.out
+
+
+def test_book_setting_2k_is_honoured(tmp_path, monkeypatch, capsys):
+    seen = record_env(monkeypatch)
+    monkeypatch.setenv("FLOW_GEN", str(FAKE_GEN_FRONT))
+    build(tmp_path, monkeypatch, images={"quality": "2K"})
+    r = run(capsys, "--chapters", "1")
+    assert r.code == 0, r.out + r.err
+    assert seen and "FLOW_QUALITY" not in seen[0]
+    assert "Download size: 2K (setting images.quality; use --quality 1K to force 1K)" in r.out
+
+
+def test_quality_flag_is_case_insensitive_and_wins_over_book(tmp_path, monkeypatch, capsys):
+    seen = record_env(monkeypatch)
+    monkeypatch.setenv("FLOW_GEN", str(FAKE_GEN_FRONT))
+    build(tmp_path, monkeypatch, images={"quality": "2K"})
+    r = run(capsys, "--chapters", "1", "--quality", "1k")
+    assert r.code == 0, r.out + r.err
+    assert seen and seen[0]["FLOW_QUALITY"] == "1K"
+    assert "Download size: 1K (forced by --quality)" in r.out
+
+
+def test_bad_quality_value_exits_2(env, capsys):
+    with pytest.raises(SystemExit) as e:
+        run(capsys, "--quality", "4K")
+    assert e.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
+
+
+def test_runner_env_forced_2k_drops_inherited_flow_quality(monkeypatch):
+    monkeypatch.setenv("FLOW_QUALITY", "1K")
+    assert F.runner_env({"images": {"quality": "1K"}}, quality="2K").get("FLOW_QUALITY") is None
+    assert F.runner_env({"images": {"quality": "1K"}}).get("FLOW_QUALITY") == "1K"
+
+
+def test_defaults_yaml_download_size_is_1k():
+    from novel.core import settings
+    assert settings._read(settings.defaults_file())["images"]["quality"] == "1K"

@@ -1,4 +1,6 @@
 """Full-HD copies of an episode's Flow images with chaiNNer: mark cropped off, upscaled, 1920x1080.
+(images.watermark: remove starts from the clean/ copies of episode_clean instead and crops nothing here;
+none starts from the downloads as they are. Each chapter's hd/hd.json records the mode the copies were made in.)
 
 Flow's ✦ mark sits at the bottom right. Each image is cropped above it (same rule as
 episode_video.clean_image: the mark's top edge plus 1%, at least 10% off the bottom,
@@ -192,11 +194,17 @@ def trim_above(crop: dict, w: int, h: int, star_y: float) -> dict:
     return {"left": side, "right": side, "bottom": h - new_h, "width": w - 2 * side, "height": new_h}
 
 
-def todo(ep_root: Path, chapters: list[int], force: bool) -> list[tuple[Path, Path]]:
+def todo(ep_root: Path, chapters: list[int], force: bool, mode: "str | dict" = "crop") -> list[tuple[Path, Path]]:
+    """(source, hd copy) pairs still to make. The source is the download (crop: it is cropped here; none: used
+    as it is) or, in remove mode, the clean/ copy of episode_clean (already free of the mark: not cropped here)."""
     pairs = []
     for n in chapters:
         img_dir = ep_root / "images" / f"c{n:04d}"
-        for src in sorted(img_dir.glob("s*-2k.jpg")):
+        if (mode.get(n, "crop") if isinstance(mode, dict) else mode) == "remove":
+            sources = sorted((img_dir / "clean").glob("s[0-9]*.jpg"))
+        else:
+            sources = sorted(img_dir.glob("s*-2k.jpg"))
+        for src in sources:
             dest = img_dir / "hd" / src.name.replace("-2k", "")
             if force or not dest.exists() or dest.stat().st_mtime < src.stat().st_mtime:
                 pairs.append((src, dest))
@@ -264,25 +272,38 @@ def make_hd(ep_root: Path, chapters: list[int], *, limit: int | None = None, for
     if not MODEL.exists() or not MODEL.with_suffix(".bin").exists():
         raise SystemExit(f"model not found: {MODEL} and its .bin (set CHAINNER_MODEL)")
 
-    pairs = todo(ep_root, chapters, force or marks_only)[: limit]
+    from . import episode_clean as CL
+    modes = {n: CL.mode_for(ep_root, n) for n in chapters}      # per chapter: a chapter `remove` must not touch stays crop
+    for n in chapters:
+        if modes[n] == "remove":
+            CL.clean_chapter(ep_root, n)              # the hd step starts from the cleaned pictures
+        CL.mark_hd(ep_root / "images" / f"c{n:04d}", modes[n])   # copies made in another mode go; this mode is recorded
+    pairs = todo(ep_root, chapters, force or marks_only, modes)[: limit]
     if not pairs:
         print("nothing to do: every image already has an up-to-date hd copy")
         return 0
 
-    by_size: dict[tuple[int, int], list[tuple[Path, Path]]] = {}
+    def mode_of(src: Path) -> str:
+        return modes[int((src.parent.parent if src.parent.name == "clean" else src.parent).name[1:])]
+    by_size: dict[tuple, list[tuple[Path, Path]]] = {}
     for src, dest in pairs:
-        by_size.setdefault(size_of(src), []).append((src, dest))
+        by_size.setdefault((*size_of(src), mode_of(src)), []).append((src, dest))
 
     t0 = time.time()
     done = 0
     CHUNK = 50          # one chaiNNer run per 50 images: a failure loses at most 50, and finished ones are kept
     batches, trimmed = [], []
-    for (w, h), all_items in by_size.items():
-        base = crop_for([s for s, _ in all_items], w, h)       # one crop for the whole size group
+    for (w, h, mode), all_items in by_size.items():
+        if mode == "crop":
+            base = crop_for([s for s, _ in all_items], w, h)   # one crop for the whole size group
+        else:                                                  # remove: the clean copies are already clean; none: left as they are
+            base = {"left": 0, "right": 0, "bottom": 0, "width": w, "height": h}
         by_crop: dict[tuple, list] = {}
         for src, dest in all_items:                            # second trim for any image with a star left in it
             mx, my, score = find_mark(src)
-            star = find_painted_star(src, (mx, my)) if score > 0.6 else find_painted_star(src, (0.95, 0.91))
+            star = None
+            if mode != "none":
+                star = find_painted_star(src, (mx, my)) if score > 0.6 else find_painted_star(src, (0.95, 0.91))
             crop = base
             if star:
                 crop = trim_above(base, w, h, star[2])
@@ -302,15 +323,16 @@ def make_hd(ep_root: Path, chapters: list[int], *, limit: int | None = None, for
         batches = [b for b in batches if b[1]]
     for (w, h), items, crop in batches:
         upscale = crop["height"] < H
-        print(f"{len(items)} images {w}x{h}: cut {crop['bottom']} px bottom, {crop['left']} px each side "
-              f"-> {crop['width']}x{crop['height']}" + (" -> 2x model" if upscale else "") + f" -> {W}x{H}")
+        print(f"{len(items)} images {w}x{h}: " + (f"cut {crop['bottom']} px bottom, {crop['left']} px each side " if crop["bottom"] else "not cropped ")
+              + f"-> {crop['width']}x{crop['height']}" + (" -> 2x model" if upscale else "") + f" -> {W}x{H}")
         with tempfile.TemporaryDirectory(prefix="hd-") as tmp:
             work = Path(tmp)
             src_dir, out_dir = work / "in", work / "out"
             src_dir.mkdir()
             names = {}
             for src, dest in items:
-                key = f"{src.parent.name}-{src.stem}"           # c0013-s07-2k: unique across chapters
+                chap = src.parent.parent.name if src.parent.name == "clean" else src.parent.name
+                key = f"{chap}-{src.stem}"                      # c0013-s07-2k (or c0013-s07): unique across chapters
                 shutil.copy2(src, src_dir / f"{key}.jpg")
                 names[key] = dest
             started = time.time()

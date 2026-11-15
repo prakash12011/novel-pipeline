@@ -19,7 +19,10 @@ TINY_JPEG = b"\xff\xd8" + b"0" * 100 + b"\xff\xd9"
 SCENE_TEXT = "A quiet lamp-lit room at night, a man at a table with a letter in his hands, rain on the window glass."
 HINDI = "\n\n".join(["Chapter title"] + [f"Paragraph {i}. " + "word " * 40 for i in range(4)])
 SECONDS: dict = {}
-PROMPT_TAIL = "(then paste into Gemini and run: novel import)"
+
+
+def by_hand(ch):
+    return f"(or by hand: novel prompt --chapters {ch} --copy, paste into Gemini, then novel import)"
 
 
 @pytest.fixture(autouse=True)
@@ -161,7 +164,7 @@ def test_brand_new_episode_only_english_text(world):
     assert [r["hindi"] for r in res["chapters"]] == [False] * 3
     assert res["verdict"] == "NOT READY" and res["verdict_text"] == "NOT READY (1 blocker)"
     assert res["exit_code"] == 1
-    assert lines(res) == [f"chapters 21-23: no Hindi yet -> novel prompt --chapters 21-23 --copy   {PROMPT_TAIL}"]
+    assert lines(res) == [f"chapters 21-23: no Hindi yet -> novel write   {by_hand('21-23')}"]
 
 
 def test_hindi_imported_not_locked(world):
@@ -182,7 +185,7 @@ def test_locked_without_scenes_names_prompt_first(world):
     res = collect(world)
     assert [r["scenes_state"] for r in res["chapters"]] == ["-"] * 3
     assert lines(res) == [
-        f"chapters 21-23: no scenes yet -> novel prompt --chapters 21-23 --copy   {PROMPT_TAIL}",
+        f"chapters 21-23: no scenes yet -> novel write   {by_hand('21-23')}",
         "chapters 21-23: no narration -> novel run   (or: novel tts push --chapters 21-23)"]
     assert res["verdict_text"] == "NOT READY (2 blockers)"
 
@@ -371,12 +374,12 @@ def test_range_grouping_in_missing_list(world):
     audio(root, chs)
     got = lines(collect(world))
     # nothing has scenes: one run of seven chapters
-    assert f"chapters 21-27: no scenes yet -> novel prompt --chapters 21-27 --copy   {PROMPT_TAIL}" in got
+    assert f"chapters 21-27: no scenes yet -> novel write   {by_hand('21-27')}" in got
     # scenes for 24 only: novel prompt takes one range, so the two runs are two commands
     scenes(root, [24])
     got = lines(collect(world))
-    assert f"chapters 21-23: no scenes yet -> novel prompt --chapters 21-23 --copy   {PROMPT_TAIL}" in got
-    assert f"chapters 25-27: no scenes yet -> novel prompt --chapters 25-27 --copy   {PROMPT_TAIL}" in got
+    assert f"chapters 21-23: no scenes yet -> novel write   {by_hand('21-23')}" in got
+    assert f"chapters 25-27: no scenes yet -> novel write   {by_hand('25-27')}" in got
     # a command that takes lists gets one line, with a comma list
     for n in (24, 26, 27):
         (root / "audio" / f"{n:05d}.mp3").unlink()

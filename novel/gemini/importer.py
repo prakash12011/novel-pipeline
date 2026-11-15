@@ -129,6 +129,22 @@ class Outcome:
 
 
 @dataclass
+class Decision:
+    """What to say to Gemini next, as data (`novel write` reads it; `novel import` prints `text`).
+
+    kind: fix_first (run `first` before anything: not Gemini's fault) | repeat (ask again for `repeat` blocks,
+    with the `fixes` list) | next (the next chapter, or the rest of a partial block) | complete | nothing.
+    """
+    kind: str
+    text: str
+    repeat: list = field(default_factory=list)       # ["c0021 IMAGES", "BIBLE B021-030"]
+    fixes: list = field(default_factory=list)        # the FIX list, deduplicated, as printed
+    fixes_more: int = 0                              # FIX items not shown (beyond MAX_FIX_ITEMS)
+    say_instead: list = field(default_factory=list)
+    first: str | None = None
+
+
+@dataclass
 class Chapter:
     """What the code knows about one chapter of a scenes-mode batch before any line is read."""
     n: int
@@ -140,7 +156,7 @@ class Chapter:
 
 class Importer:
     def __init__(self, book: str, *, dry_run: bool = False, replace: bool = False, allow_revise: bool = False,
-                 batch: str | None = None, out=print, source_args: str = ""):
+                 batch: str | None = None, out=print, source_args: str = "", api: dict | None = None):
         from novel.core import paths, settings
         from novel.stages import episode_scenes as S
         self.S = S
@@ -162,6 +178,7 @@ class Importer:
         self.touched: list[str] = []
         self._eps = None
         self.forced = self._norm_batch(batch) if batch else None
+        self.api = dict(api or {})          # {"via": "api", "model": ...}: written into progress and the scene file
 
     # -------------------------------------------------------------- batch lookup
 
@@ -442,7 +459,8 @@ class Importer:
         self.state = trial
         o.summary = (", ".join(f"{v} {k}{'s' if v != 1 else ''}" for k, v in counts.items()) or "nothing new") + \
             (" applied to the bible" if counts else "")
-        bt.progress["bible"]["blocks"][b.name] = {"sha": canon, "imported": utc_iso(), "lines": len(items)}
+        bt.progress["bible"]["blocks"][b.name] = {"sha": canon, "imported": utc_iso(), "lines": len(items),
+                                                  **self.api}
         if b.chapter is None:
             bt.progress["bible"]["done"] = True     # in memory; a dry run never saves progress
         if self.dry_run:
@@ -581,6 +599,7 @@ class Importer:
     @staticmethod
     def doc_lines(doc: dict) -> tuple[dict, dict]:
         groups = {gid: {"type": "group", "group": gid, "loc": g.get("loc"), "time": g.get("time"),
+                        **({"where": g["where"]} if g.get("where") else {}),
                         "light": g.get("light"), "weather": g.get("weather", ""), "present": g.get("present", []),
                         "staging": g.get("staging")}
                   for gid, g in (doc.get("groups") or {}).items()}
@@ -692,6 +711,8 @@ class Importer:
                 o.errors.append(C.Issue(images_new[key][1], f"image {key} group",
                                         f"unknown group '{line['group']}': no group line for it in this block or an "
                                         f"earlier part (a group line comes before its images)"))
+        for n_, msg in C.cast_present_errors(groups, {k: v for k, v in images.items() if k in new_i}):
+            o.errors.append(C.Issue(images_new[n_][1], f"image {n_} cast", msg, C.excerpt(C.dump_line(images[n_]))))
         missing = C.missing_windows(images, ch.ctx.count)
         if o.errors:
             o.fix_for_gemini = [f"{e.what + ': ' if e.what else ''}{e.msg}" for e in o.errors]
@@ -748,7 +769,7 @@ class Importer:
             write_atomic(dest, self.staging_text(groups, images))
         c = bt.chapter(n)
         c.update({"status": "done", "imported": utc_iso(), "more_owed": False,
-                  "scenes": str(target.relative_to(self.book_dir)).replace("\\", "/")})
+                  "scenes": str(target.relative_to(self.book_dir)).replace("\\", "/"), **self.api})
 
     def build_doc(self, bt: Batch, ch: Chapter, groups: dict, images: dict) -> dict:
         from novel.stages import episode as E
@@ -768,7 +789,7 @@ class Importer:
                            "scene": im["action"]})
         return {"version": 2, "chapter": ch.n, "pacing": self.S.PACING, "pacing_params": params,
                 "hindi_sha256": lock[f"{ch.n:05d}.txt"],
-                "source": {"batch": bt.id, "imported": utc_iso()},
+                "source": {"batch": bt.id, "imported": utc_iso(), **self.api},
                 "groups": {g: {k: v for k, v in groups[g].items() if k not in ("type", "group") and not k.startswith("_")}
                            for g in order},
                 "scenes": scenes}
@@ -835,6 +856,8 @@ class Importer:
             if line["group"] not in groups:
                 o.errors.append(C.Issue(no, f"image {k} group", f"unknown group '{line['group']}': no group line "
                                                                 f"for it in this PATCH or the imported chapter"))
+        for n_, msg in C.cast_present_errors(groups, {k: v[0] for k, v in images_new.items()}):
+            o.errors.append(C.Issue(images_new[n_][1], f"image {n_} cast", msg))
         if o.errors:
             o.fix_for_gemini = [f"{e.what + ': ' if e.what else ''}{e.msg}" for e in o.errors]
             return self.reject(o)
@@ -973,10 +996,11 @@ class Importer:
         for w in o.warnings:
             self.out("  warning: " + (w.render() if isinstance(w, C.Issue) else w))
 
-    def say(self, bt: Batch | None) -> str:
+    def decide(self, bt: Batch | None) -> Decision:
+        """The one thing to say to Gemini next, as data."""
         firsts = [o.fix_first for o in self.outcomes if o.rejected and o.fix_first]
         if firsts:
-            return f"nothing yet. First run: {firsts[0]}"
+            return Decision("fix_first", f"nothing yet. First run: {firsts[0]}", first=firsts[0])
         rejected = [o for o in self.outcomes if o.rejected]
         instead = [o.say_instead for o in rejected if o.say_instead]
         repeats = []
@@ -991,27 +1015,32 @@ class Importer:
                 for f in o.fix_for_gemini:
                     if f not in fixes:
                         fixes.append(f)
+            shown = fixes[:MAX_FIX_ITEMS]
+            more = len(fixes) - len(shown)
             if fixes:
-                shown = fixes[:MAX_FIX_ITEMS]
-                more = f"; and {len(fixes) - len(shown)} more" if len(fixes) > len(shown) else ""
-                text += ". FIX: " + "; ".join(shown) + more
-            return text
+                text += ". FIX: " + "; ".join(shown) + (f"; and {more} more" if more > 0 else "")
+            return Decision("repeat", text, repeats, shown, max(more, 0), instead)
         if rejected:
-            return "nothing yet: fix the problems above, then run novel import again"
+            return Decision("nothing", "nothing yet: fix the problems above, then run novel import again")
         if bt is None:
-            return "nothing yet"
+            return Decision("nothing", "nothing yet")
         if not bt.progress["bible"].get("done"):
-            return f"repeat BIBLE {bt.id}"
+            return Decision("repeat", f"repeat BIBLE {bt.id}", [f"BIBLE {bt.id}"])
         states = {n: self.chapter_status(bt, n)[1] for n in bt.chapters}
         if any(s.startswith("partial") for s in states.values()):
-            return "next"
+            return Decision("next", "next")
         pending = [n for n, s in states.items() if not s.startswith("done")]
         if not pending:
-            return f"nothing: batch {bt.id} is complete. Next: novel qa --chapters {bt.first}-{bt.last}"
+            return Decision("complete", f"nothing: batch {bt.id} is complete. Next: novel qa --chapters "
+                                        f"{bt.first}-{bt.last}")
         started = [n for n, s in states.items() if s != "waiting"]
         if started and min(pending) < max(started) and states[min(pending)] == "waiting":
-            return f"repeat c{min(pending):04d} {'IMAGES' if bt.mode == 'scenes' else 'HINDI'}"
-        return "next"
+            what = f"c{min(pending):04d} {'IMAGES' if bt.mode == 'scenes' else 'HINDI'}"
+            return Decision("repeat", f"repeat {what}", [what])
+        return Decision("next", "next")
+
+    def say(self, bt: Batch | None) -> str:
+        return self.decide(bt).text
 
     def finish(self) -> int:
         shown = [self.batches[b] for b in self.touched if b in self.batches]

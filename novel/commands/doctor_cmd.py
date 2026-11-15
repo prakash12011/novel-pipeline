@@ -128,6 +128,17 @@ def check_playwright():
                 f'cd "{paths.repo_root() / "flow"}" && npm ci', True)
 
 
+def check_mark_remover():
+    """The two npm packages `novel clean` needs (images.watermark: remove). Optional: the default `crop` needs neither."""
+    flow = paths.repo_root() / "flow"
+    out = []
+    for name in ("@pilio/gemini-watermark-remover", "sharp"):
+        d = flow / "node_modules" / Path(name)
+        out.append(_res(name, d.is_dir(), str(d) if d.is_dir() else f"flow/node_modules/{name} not found",
+                        f'optional (images.watermark: remove): cd "{flow}" && npm ci', False))
+    return out
+
+
 def check_ffmpeg():
     out = []
     ff = which("ffmpeg")
@@ -437,6 +448,7 @@ def fix_path(getter=None, writer=None, ask=None, out=print):
 
 def collect(online=False):
     results = [check_python(), check_packages(), check_node(), check_playwright()]
+    results += check_mark_remover()
     results += check_ffmpeg()
     results += [check_settings_file(), check_data_dir()]
     results += check_chrome()

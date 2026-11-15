@@ -3,7 +3,7 @@
 `novel` is a command-line tool that turns a web novel into long Hindi/Hinglish "novel explained" episodes for the YouTube channel "Manga and Novel".
 
 - You run it yourself, one command at a time, from a terminal. `novel status` always tells you what is missing and which command fixes it.
-- Gemini (in the browser, by hand) writes the pictures' descriptions; Google Flow draws the pictures in your own signed-in Chrome; Kaggle narrates; ffmpeg renders.
+- Gemini (through your API keys: `novel write`; or in the browser, by hand) writes the Hindi, the bible and the pictures' descriptions; Google Flow draws the pictures in your own signed-in Chrome; Kaggle narrates; ffmpeg renders.
 - Book data (chapters, pictures, audio, videos) lives in a separate data folder, not in this repo.
 - Per-PC settings and keys live in `~\.novel-pipeline\`.
 - The day-to-day instructions are in [COMMANDS.md](COMMANDS.md). Every setting is listed in [docs/settings.md](docs/settings.md).
@@ -51,39 +51,63 @@ npm ci
 
 You should see `added N packages`. This installs `playwright-core`, which lets the tool drive your Chrome.
 
-### 5. Tell the tool about this PC
+### 5. Put `novel` on PATH
 
-Create an empty Chrome profile folder for the tool, for example `D:\Novel Pipeline Chrome`, then run (use your own paths; the Kaggle names come from step 7):
-
-```cmd
-"D:\Novel Pipeline\bin\novel.cmd" settings init --data-dir "D:\Novel Data" --chrome-exe "C:\Program Files\Google\Chrome\Application\chrome.exe" --chrome-profile "D:\Novel Pipeline Chrome" --kaggle-account <profile-name> --kaggle-username <kaggle-username>
-```
-
-You should see `wrote C:\Users\<you>\.novel-pipeline\settings.yaml`. That file holds the data folder, Chrome's program and profile folder, the DevTools address (`http://127.0.0.1:9222`) and the Kaggle names. It is for this PC only; do not copy it to another PC. To change something later, run the same command again with `--force`. Add `--chainner-exe "<path>"` if you installed chaiNNer.
-
-To type just `novel` from any folder:
+Do this once per PC. After it, you type `novel` from any folder, in PowerShell, cmd or Git Bash, and never need the full path of the batch file again.
 
 ```cmd
 "D:\Novel Pipeline\bin\novel.cmd" doctor --fix-path
 ```
 
-It offers to add `D:\Novel Pipeline\bin` to your PATH. Say yes, then open a new terminal.
+It shows the one folder it will add to your user PATH (`D:\Novel Pipeline\bin`) and asks `Add it? [y/N]`. Type `y`. Nothing else in PATH changes.
 
-### 6. Keys: `secrets.env`
+Then **open a new terminal**: a terminal that was already open keeps the old PATH. If you use the terminal inside VS Code, close and reopen VS Code.
+
+You should see, from any folder:
+
+```cmd
+cd /d C:\
+where novel
+novel doctor
+```
+
+`where novel` prints `D:\Novel Pipeline\bin\novel.cmd`, and the `bin on PATH` line of `novel doctor` says `ok`. (In Git Bash, use `which novel` instead of `where novel`.)
+
+The folder you are in does not matter: the tool finds its own code from where `novel.cmd` is, and finds the book data and the current book from `%USERPROFILE%\.novel-pipeline\`. So `novel status` gives the same answer in `C:\`, in the repo, or in the data folder.
+
+By hand instead (PowerShell), if you prefer:
+
+```powershell
+[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User').TrimEnd(';') + ';D:\Novel Pipeline\bin', 'User')
+```
+
+If the repo is in another folder on this PC, use that folder's `bin` in the commands above.
+
+### 6. Tell the tool about this PC
+
+Create an empty Chrome profile folder for the tool, for example `D:\Novel Pipeline Chrome`, then run (use your own paths; the Kaggle names come from step 8):
+
+```cmd
+novel settings init --data-dir "D:\Novel Data" --chrome-exe "C:\Program Files\Google\Chrome\Application\chrome.exe" --chrome-profile "D:\Novel Pipeline Chrome" --kaggle-account <profile-name> --kaggle-username <kaggle-username>
+```
+
+You should see `wrote C:\Users\<you>\.novel-pipeline\settings.yaml`. That file holds the data folder, Chrome's program and profile folder, the DevTools address (`http://127.0.0.1:9222`) and the Kaggle names. It is for this PC only; do not copy it to another PC. To change something later, run the same command again with `--force`. Add `--chainner-exe "<path>"` if you installed chaiNNer.
+
+### 7. Keys: `secrets.env`
 
 Copy `secrets.env.example` from the repo to `%USERPROFILE%\.novel-pipeline\secrets.env`, and fill in the values. The file has these names (never put the values anywhere else, never commit this file):
 
-- `GEMINI_API_KEY` (needed: English captions, and the fallback AI)
-- `GEMINI_API_KEY2`, `GEMINI_API_KEY3` (optional extra keys; the tool tries the others when one is rate-limited)
+- `GEMINI_API_KEY` (needed: `novel write`, English captions, and the fallback AI)
+- `GEMINI_API_KEY2`, `GEMINI_API_KEY3` (optional extra keys; the tool tries the next one when one is rate-limited)
 - `YOUTUBE_API_KEY` (optional: search suggestions for `novel research`)
 
-### 7. Kaggle (narration)
+### 8. Kaggle (narration)
 
 1. Make or reuse a Kaggle account. In Kaggle: **Settings, API**, create an access token.
-2. Save it as the file `%USERPROFILE%\.kaggle\access_token-<profile-name>` (the profile name you gave in step 5).
+2. Save it as the file `%USERPROFILE%\.kaggle\access_token-<profile-name>` (the profile name you gave in step 6).
 3. In Kaggle, make a **private dataset** named `hf-token` that holds your Hugging Face token. The narration notebook reads it from there; it never lives on this PC.
 
-### 8. Chrome and Flow
+### 9. Chrome and Flow
 
 ```cmd
 novel chrome
@@ -93,7 +117,7 @@ You should see `Chrome answers on port 9222 (...)`. In the Chrome window that op
 
 The Flow "Characters" (saved references) belong to your Google account and Flow project, so they are already there on a new PC.
 
-### 9. Run the check until it says READY
+### 10. Run the check until it says READY
 
 ```cmd
 novel doctor
@@ -105,7 +129,7 @@ Each line starts with `[R]` (required) or `[o]` (optional) and shows `ok`, `MISS
 novel doctor --online
 ```
 
-### 10. Pick the book and look at it
+### 11. Pick the book and look at it
 
 ```cmd
 novel use coi --ep 3
@@ -116,7 +140,7 @@ novel status
 
 ## Run
 
-Call the tool with `"D:\Novel Pipeline\bin\novel.cmd" <command>`. After `novel doctor --fix-path` and a new terminal, you can type `novel <command>` from any folder.
+Type `novel <command>` from any folder (PowerShell, cmd or Git Bash). This works once `D:\Novel Pipeline\bin` is on your PATH (setup step 5). On a PC where it is not on PATH yet, the full path does the same thing: `"D:\Novel Pipeline\bin\novel.cmd" <command>`.
 
 ### One episode in short
 
@@ -132,16 +156,18 @@ Call the tool with `"D:\Novel Pipeline\bin\novel.cmd" <command>`. After `novel d
    novel status
    ```
 
-3. Make the Gemini prompt (it is copied to the clipboard):
+3. Let the Gemini API write the bible and the picture lines (and the Hindi of a chapter that has none). It takes the next 5 chapters that need work; run it again for the next 5:
 
    ```cmd
-   novel prompt --chapters 21-30 --copy
+   novel write
    ```
 
-4. File Gemini's reply (repeat for each chapter):
+   (By hand instead: `novel prompt --chapters 21-30 --copy`, paste the prompt into the Gemini app, then `novel import` for each reply. Both ways end in the same files.)
+
+4. See what it did and what is left:
 
    ```cmd
-   novel import
+   novel status
    ```
 
 5. Check the work:
@@ -222,7 +248,7 @@ After copying:
 
 | What | Where | Notes |
 | --- | --- | --- |
-| The tool (this repo) | `D:\Novel Pipeline\` | `bin\novel.cmd` is the command; `novel\` is the code; `flow\` the Chrome/Flow scripts; `kaggle\` the narration notebook; `config\defaults.yaml` the built-in settings; `assets\fonts\` the fonts |
+| The tool (this repo) | `D:\Novel Pipeline\` | `bin\novel.cmd` is the command (`bin` is on PATH, so you type `novel`); `novel\` is the code; `flow\` the Chrome/Flow scripts; `kaggle\` the narration notebook; `config\defaults.yaml` the built-in settings; `assets\fonts\` the fonts |
 | Book data | `D:\Novel Data\<book>\` (path set by `data_dir`) | `book.yaml`, `source\` (EPUB), `chapters\`, `bible\`, `gemini\<batch>\` (prompt, files to upload, raw replies), `inbox\`, `research\`, `extras\`, `episodes\E003\` |
 | One episode | `D:\Novel Data\<book>\episodes\E003\` | `episode.yaml` (settings for the episode), `hindi\`, `scenes\`, `images\`, `audio\`, `timing\`, `captions\`, `video\` (renders and the joined `E003.mp4`), `publish\` (title text and thumbnails), `qa\`, `flow\` (plan, journal, status) |
 | This PC's settings | `%USERPROFILE%\.novel-pipeline\settings.yaml` | data folder, Chrome, Kaggle names |

@@ -130,8 +130,8 @@ def check_chapter(E, S, ep_root: Path, n: int, a, chars_doc: dict, locs_doc: dic
     # 2. the scene file
     sf = S.scenes_path(ep_root, n)
     if not sf.exists():
-        c.refused.append(f"no scene file at {sf}. Fix: import the scenes for chapter {n} (`novel prompt`, then "
-                         f"`novel import`)")
+        c.refused.append(f"no scene file at {sf}. Fix: write the scenes for chapter {n} (`novel write`, or by hand "
+                         f"`novel prompt` then `novel import`)")
         return c
     doc = _read_json(sf)
     if not isinstance(doc, dict):

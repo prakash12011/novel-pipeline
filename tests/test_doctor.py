@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -153,3 +154,16 @@ def test_kaggle_token_fix_without_an_account(home, tmp_path, monkeypatch):
     monkeypatch.setattr(D.Path, "home", classmethod(lambda cls: tmp_path / "pc"))
     r = D.check_kaggle_token()
     assert r.status == D.MISSING and "access_token" in r.fix and "kaggle: {account:" in r.fix
+
+
+def test_mark_remover_packages_are_optional_and_reported(tmp_path, monkeypatch):
+    """images.watermark: remove needs two npm packages in flow/node_modules; the default (crop) needs neither,
+    so a miss only warns and never changes the exit code."""
+    monkeypatch.setattr(D.paths, "repo_root", lambda: tmp_path)
+    rs = D.check_mark_remover()
+    assert [r.name for r in rs] == ["@pilio/gemini-watermark-remover", "sharp"]
+    assert [r.status for r in rs] == [D.WARN, D.WARN] and all("npm ci" in r.fix for r in rs)
+    assert D.exit_code(rs) == 0
+    for name in ("@pilio/gemini-watermark-remover", "sharp"):
+        (tmp_path / "flow" / "node_modules" / Path(name)).mkdir(parents=True)
+    assert [r.status for r in D.check_mark_remover()] == [D.OK, D.OK]

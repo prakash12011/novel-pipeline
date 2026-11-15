@@ -34,12 +34,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -200,63 +203,150 @@ def api_keys() -> list[str]:
     return keys
 
 
-class Gemini:
-    """REST calls that rotate keys on 429 and stop on errors that won't fix themselves."""
+class GeminiStop(SystemExit):
+    """A stop the run cannot fix by itself. Uncaught, it ends the program with its message (as before)."""
 
-    def __init__(self, model: str, log: Path):
+
+class QuotaExhausted(GeminiStop):
+    """Every key (and every fallback model) is rate-limited after the waits: the daily quota is probably gone."""
+
+
+class Refused(GeminiStop):
+    """Gemini refused the request (HTTP 400, 403, 404...): asking again gives the same answer."""
+
+
+@dataclass
+class GenResult:
+    """One reply: the text, why it ended (STOP | MAX_TOKENS | ...), which model and key (position) made it."""
+    text: str
+    finish: str | None
+    model: str
+    key: int                      # 1-based position of the key in secrets.env, never the key itself
+    usage: dict = field(default_factory=dict)       # the API's usageMetadata
+    seconds: float = 0.0
+    rate_limits: int = 0          # 429s met while getting this reply
+
+
+class Gemini:
+    """REST calls that rotate keys on 429 and stop on errors that won't fix themselves.
+
+    When every key is limited: the next model of `fallback_models` is tried (new key sweep); when those are
+    limited too, wait `key_wait_s` and try again from the first model, up to KEY_WAIT_ROUNDS times, then
+    QuotaExhausted. `min_gap` seconds are kept between two requests (pacing). `sleep` and `clock` can be
+    replaced (tests); `say` receives one line per rate-limit event (never a key).
+    """
+
+    def __init__(self, model: str, log: Path, *, fallback_models=(), min_gap: float = 0.0, sleep=time.sleep,
+                 clock=time.monotonic, say=print, key_wait_s: float = KEY_WAIT_S):
         self.model, self.keys, self.k, self.log = model, api_keys(), 0, log
         self.calls = 0
+        self.fallback_models = [m for m in fallback_models if m and m != model]
+        self.min_gap, self.sleep, self.clock, self.say, self.key_wait_s = min_gap, sleep, clock, say, key_wait_s
+        self.rate_switches = 0                # keys moved on because of a 429
+        self.usage = {"prompt": 0, "output": 0, "thoughts": 0, "total": 0}
+        self._lock = threading.Lock()
+        self._last = None
+        self._sticky = (0, 0.0)               # (index in the model list, until when): a fallback keeps being used
 
-    def _post(self, body: dict) -> dict:
+    def _post(self, body: dict, model: str | None = None) -> dict:
+        model = model or self.model
+        url = os.environ.get("NOVEL_GEMINI_URL") or URL        # tests point it at a local server
         req = urllib.request.Request(
-            URL.format(model=self.model), json.dumps(body).encode(),
+            url.format(model=model), json.dumps(body).encode(),
             {"x-goog-api-key": self.keys[self.k], "Content-Type": "application/json"})
         return json.load(urllib.request.urlopen(req, timeout=300))
 
-    def ask(self, system: str, text: str, *, json_out: bool = False,
-            temperature: float = 0.4) -> str:
+    def _pace(self) -> None:
+        """Keep `min_gap` seconds between the start of two requests (the slot is reserved under a lock, so
+        requests from several threads queue up)."""
+        if self.min_gap <= 0:
+            return
+        with self._lock:
+            now = self.clock()
+            slot = now if self._last is None else max(now, self._last + self.min_gap)
+            self._last = slot
+        if slot - now > 0:
+            self.sleep(slot - now)
+
+    def generate(self, system: str, text: str, *, json_out: bool = False, temperature: float = 0.4,
+                 max_output_tokens: int | None = None) -> GenResult:
         body = {"system_instruction": {"parts": [{"text": system}]},
                 "contents": [{"role": "user", "parts": [{"text": text}]}],
                 "generationConfig": {"temperature": temperature}}
         if json_out:
             body["generationConfig"]["responseMimeType"] = "application/json"
-        limited = 0
-        for attempt in range(1, 30):
+        if max_output_tokens:
+            body["generationConfig"]["maxOutputTokens"] = max_output_tokens
+        models = [self.model] + self.fallback_models
+        mi = self._sticky[0] if self.clock() < self._sticky[1] and self._sticky[0] < len(models) else 0
+        limited, waits, hits = 0, 0, 0
+        for attempt in range(1, 60):
+            self._pace()
+            model, key = models[mi], self.k
+            t0 = self.clock()
             try:
-                self.calls += 1
-                r = self._post(body)
+                with self._lock:
+                    self.calls += 1
+                r = self._post(body, model)
             except Exception as e:
                 code = getattr(e, "code", None)
-                self.note(event="http_error", code=code, key=self.k, error=str(e)[:200])
+                self.note(event="http_error", code=code, key=key + 1, model=model, error=str(e)[:200])
                 if not _retryable(e):
-                    raise SystemExit(f"Gemini refused with HTTP {code}: {e} - "
-                                     f"this won't fix itself, stopping")
+                    raise Refused(f"Gemini refused with HTTP {code}: {e} - "
+                                  f"this won't fix itself, stopping")
                 if code == 429:
                     limited += 1
-                    self.k = (self.k + 1) % len(self.keys)
-                    if limited % len(self.keys) == 0:
-                        if limited // len(self.keys) >= KEY_WAIT_ROUNDS:
-                            raise SystemExit("every key is still rate-limited after "
-                                             f"{KEY_WAIT_ROUNDS} waits - the daily quota is "
-                                             "probably used up (it resets at midnight Pacific)")
-                        print(f"    all {len(self.keys)} keys rate-limited, waiting "
-                              f"{KEY_WAIT_S}s", flush=True)
-                        time.sleep(KEY_WAIT_S)
+                    hits += 1
+                    with self._lock:
+                        self.rate_switches += 1
+                        self.k = (self.k + 1) % len(self.keys)
+                    n = len(self.keys)
+                    self.say(f"    rate limit: key {key + 1} of {n} on {model}; "
+                             + (f"switching to key {self.k + 1}" if limited % n else "no key left to try"))
+                    if limited % n == 0:
+                        if mi + 1 < len(models):
+                            mi += 1
+                            self._sticky = (mi, self.clock() + self.key_wait_s)
+                            self.say(f"    every key is limited on {model}; trying the fallback model {models[mi]}")
+                            continue
+                        waits += 1
+                        if waits >= KEY_WAIT_ROUNDS:
+                            raise QuotaExhausted("every key is still rate-limited after "
+                                                 f"{KEY_WAIT_ROUNDS} waits - the daily quota is "
+                                                 "probably used up (it resets at midnight Pacific)")
+                        mi = 0
+                        self.say(f"    all {n} keys rate-limited, waiting {self.key_wait_s:g}s "
+                                 f"(wait {waits} of {KEY_WAIT_ROUNDS - 1})")
+                        self.sleep(self.key_wait_s)
                 else:
-                    time.sleep(min(60, 5 * attempt))
+                    self.sleep(min(60, 5 * attempt))
                 continue
             if not r.get("candidates"):
                 raise ValueError(f"blocked: {r.get('promptFeedback')}")
             cand = r["candidates"][0]
-            if cand.get("finishReason") != "STOP":
-                raise ValueError(f"finish={cand.get('finishReason')}")
-            return "".join(p.get("text", "") for p in cand.get("content", {}).get("parts", []))
+            parts = cand.get("content", {}).get("parts", [])
+            out = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+            u = r.get("usageMetadata") or {}
+            with self._lock:
+                self.usage["prompt"] += int(u.get("promptTokenCount") or 0)
+                self.usage["output"] += int(u.get("candidatesTokenCount") or 0)
+                self.usage["thoughts"] += int(u.get("thoughtsTokenCount") or 0)
+                self.usage["total"] += int(u.get("totalTokenCount") or 0)
+            return GenResult(out, cand.get("finishReason"), model, key + 1, u, round(self.clock() - t0, 2), hits)
         raise SystemExit("Gemini kept failing - see the log")
+
+    def ask(self, system: str, text: str, *, json_out: bool = False,
+            temperature: float = 0.4) -> str:
+        r = self.generate(system, text, json_out=json_out, temperature=temperature)
+        if r.finish != "STOP":
+            raise ValueError(f"finish={r.finish}")
+        return r.text
 
     def note(self, **kw) -> None:
         kw["at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with self.log.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(kw, ensure_ascii=False) + "\n")
+        with self._lock:
+            with self.log.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(kw, ensure_ascii=False) + "\n")
 
 
 # ------------------------------------------------------------------ chapter

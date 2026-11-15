@@ -33,7 +33,7 @@ from novel import flowrun as F
 from novel.core import chromelock, context, paths, settings
 
 USAGE = ("usage: novel images [--book B] [--ep N] [--chapters A-B] [--max N] [--batch K] [--resend ID] "
-         "[--upgrade] [--i-checked-flow] [--dry-run]")
+         "[--upgrade] [--quality 1K|2K] [--i-checked-flow] [--dry-run]")
 
 # runner option -> settings key (a missing key leaves the runner's own default in place)
 OPTION_KEYS = [
@@ -140,6 +140,8 @@ def main(argv, inject=None, ask=input, interactive=None) -> int:
     ap.add_argument("--batch", type=int)
     ap.add_argument("--resend", metavar="ID")
     ap.add_argument("--upgrade", action="store_true")
+    ap.add_argument("--quality", type=str.upper, choices=["1K", "2K"], metavar="1K|2K",
+                    help="download size for this run (default: images.quality, 1K)")
     ap.add_argument("--i-checked-flow", action="store_true", dest="checked")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
@@ -155,6 +157,13 @@ def main(argv, inject=None, ask=input, interactive=None) -> int:
     eff = settings.effective(book, ep)
     img = eff.get("images") or {}
     ep_flag = f" --ep {ep}"
+    setting = str(img.get("quality") or "").upper()
+    size = "1K" if (a.quality or setting) == "1K" else "2K"     # anything but 1K is the normal 2K download
+    if a.quality:
+        print(f"Download size: {size} (forced by --quality)")
+    else:
+        other = "2K" if size == "1K" else "1K"
+        print(f"Download size: {size} (setting images.quality; use --quality {other} to force {other})")
 
     # 1. the plan
     pfile = F.plan_file(ep_root)
@@ -315,7 +324,7 @@ def _run_locked(a, book, ep, ep_root, plan, pfile, rows, chosen, cmd, eff, max_n
     code = 0
     try:
         while True:
-            env = F.runner_env(eff, ep_root)
+            env = F.runner_env(eff, ep_root, quality=a.quality)
             if front:
                 env["FLOW_FRONT"] = "1"
             else:

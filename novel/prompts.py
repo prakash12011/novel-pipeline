@@ -9,11 +9,12 @@ Layout (see the plan, Appendix A "Assembled Flow prompt"):
 
     <HEADER_MARK ... art style>
     CAST (attached Flow characters, keep their look exactly): ...
+    SETTING: indoors|outdoors, <time of day>. <one fixed consequence sentence>      (the same in every picture of a group)
     PLACE: <name>. <fixed block>. Time: ... Light: ...[ Weather: ...]
     STAGING (the same in every picture of this moment): ...
     CONTINUITY: ...                                   (2nd and later picture of a group)
     IN THE PICTURE:
-    - <name>: <pose>; hands: <hands>; mood: <mood>.
+    - <name>: <position>; <pose>; hands: <hands>; mood: <mood>.     (older files: no <position>)
     ALSO IN THE PICTURE: <text-only looks>; <others>
     WEARING (this picture only): <name>: <wearing>
     SHOT: ...
@@ -28,6 +29,7 @@ and the label must not appear earlier in the file).
 from __future__ import annotations
 
 from novel import bible as B
+from novel.gemini.contract import no_others
 from novel.stages import episode_scenes as S
 
 HEADER_MARK = S.HEADER_MARK
@@ -54,6 +56,25 @@ CONTINUITY = ("CONTINUITY: same place, same furniture, same light as the previou
               "only the camera moves.")
 FOOTER_V2_EXTRA = (" Each person holds only what is written for them under IN THE PICTURE; hands described as "
                    "empty are empty. Never add a prop that is not listed.")
+
+
+# SETTING: one fixed sentence for each (where, time) pair, so an image model cannot show a night sky through the
+# window of a daytime room, or lamps burning in an open field at noon. Night variants name the group's light.
+SETTING_WORD = {"indoor": "indoors", "outdoor": "outdoors"}
+SETTING_TIME = {"dawn": "at dawn", "day": "in daylight", "dusk": "at dusk", "night": "at night"}
+SETTING_CONSEQUENCE = {
+    ("indoor", "night"): "No daylight through windows; the only light is: {light}.",
+    ("outdoor", "night"): "Dark sky; no sun; light only from: {light}.",
+    ("indoor", "day"): "Daylight may enter through windows; no night sky.",
+    ("outdoor", "day"): "Open sky above; natural daylight; no lamps lit unless listed.",
+    ("indoor", "dawn"): "Weak first daylight may enter through windows; no night sky; lamps may still be lit.",
+    ("outdoor", "dawn"): ("Open sky above with the first pale light at the horizon; the sun is not up high; "
+                          "no lamps lit unless listed."),
+    ("indoor", "dusk"): "Fading daylight may enter through windows; no full night sky; lamps may be lit.",
+    ("outdoor", "dusk"): ("Open sky above, last light of the day and a darkening sky; the sun is at or below the "
+                          "horizon; lamps lit only if listed."),
+}
+KIND_WHERE = {"interior": "indoor", "exterior": "outdoor"}
 
 
 class PromptError(ValueError):
@@ -128,6 +149,21 @@ def place_lines(scene: dict, doc: dict, locations: dict) -> tuple[str, str]:
     return place, f"STAGING (the same in every picture of this moment): {_one(g.get('staging'))}"
 
 
+def setting_line(scene: dict, doc: dict, locations: dict) -> str:
+    """The SETTING line of the scene's group: identical for every picture of one group. A group without
+    `where` (an older scene file) takes it from the location's kind; with neither, there is no line."""
+    gid = scene.get("group")
+    g = (doc.get("groups") or {}).get(gid) or {}
+    loc = _locations(locations).get(g.get("loc")) or {}
+    where = g.get("where") or KIND_WHERE.get(str(loc.get("kind") or "").strip().lower())
+    time = str(g.get("time") or "").strip().lower()
+    if where not in SETTING_WORD or time not in SETTING_TIME:
+        return ""
+    light = _one(g.get("light") or loc.get("default_light")) or "the light listed below"
+    return (f"SETTING: {SETTING_WORD[where]}, {SETTING_TIME[time]}. "
+            + SETTING_CONSEQUENCE[(where, time)].format(light=light.rstrip(".")))
+
+
 def flow_prompt(scene: dict, doc: dict, chapter: int, bible: dict, locations: dict,
                 settings: dict | None, position_in_group: int) -> str:
     """The full Flow prompt for one picture of a v2 scene file. `settings` is reserved (nothing in the
@@ -141,7 +177,8 @@ def flow_prompt(scene: dict, doc: dict, chapter: int, bible: dict, locations: di
     if names:
         parts.append("CAST (attached Flow characters, keep their look exactly): " + ", ".join(names) + ".")
     place, staging = place_lines(scene, doc, locations)
-    block = [place, staging]
+    setting = setting_line(scene, doc, locations)
+    block = ([setting] if setting else []) + [place, staging]
     if position_in_group > 0:
         block.append(CONTINUITY)
     parts.append("\n".join(block))
@@ -150,12 +187,13 @@ def flow_prompt(scene: dict, doc: dict, chapter: int, bible: dict, locations: di
         lines = ["IN THE PICTURE:"]
         for m in members:
             c = m["cast"]
-            lines.append(f"- {m['display']}: {_one(c.get('pose'))}; hands: {_one(c.get('hands'))}; "
+            where = f"{_one(c.get('position'))}; " if _one(c.get("position")) else ""
+            lines.append(f"- {m['display']}: {where}{_one(c.get('pose'))}; hands: {_one(c.get('hands'))}; "
                          f"mood: {_one(c.get('mood'))}.")
     else:
         lines = ["IN THE PICTURE: no named characters."]
     also = [f"{m['display']}: {_one(m['look'])}" for m in members if not m["flow_name"]]
-    if _one(scene.get("others")):
+    if not no_others(scene.get("others")) and _one(scene.get("others")):
         also.append(_one(scene["others"]))
     if also:
         lines.append("ALSO IN THE PICTURE: " + "; ".join(also))

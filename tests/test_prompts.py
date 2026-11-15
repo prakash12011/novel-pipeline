@@ -16,6 +16,8 @@ LOCS = B.load_locations(FIX)
 HEAD = S.STYLE.format(style="Invented test style")
 FOOT = S.FOOTER + (" Each person holds only what is written for them under IN THE PICTURE; hands described as "
                    "empty are empty. Never add a prop that is not listed.")
+QUAY_SETTING = ("SETTING: outdoors, at dawn. Open sky above with the first pale light at the horizon; the sun is "
+                "not up high; no lamps lit unless listed.")
 QUAY = ("PLACE: Harbour Quay. A long stone quay curving around a small grey harbour. Rowing boats tied to iron "
         "rings along the edge, stacks of lobster pots, coils of rope, a row of tall iron lamp posts, a squat bell "
         "tower at the far end and low whitewashed houses with slate roofs behind. Time: dawn. Light: pale light "
@@ -41,12 +43,12 @@ def scene(i, group, shot, cast_, action="Maren looks over the water.", others=""
 DOC = {
     "version": 2, "chapter": 1,
     "groups": {
-        "g01": {"loc": "harbour_quay", "time": "dawn", "light": "pale light from the left", "weather": "clear",
+        "g01": {"loc": "harbour_quay", "time": "dawn", "where": "outdoor", "light": "pale light from the left", "weather": "clear",
                 "present": ["maren_vale", "tobias_reed", "old_harl"],
                 "staging": "Maren at the quay edge on the left, Tobias walking in from the right, Harl by his boat"},
-        "g02": {"loc": "net_loft", "time": "dusk", "light": "oil lamp light", "weather": "heavy rain",
+        "g02": {"loc": "net_loft", "time": "dusk", "where": "indoor", "light": "oil lamp light", "weather": "heavy rain",
                 "present": ["maren_vale"], "staging": "Maren at the workbench"},
-        "g03": {"loc": "net_loft", "time": "dusk", "light": "oil lamp light", "weather": "still",
+        "g03": {"loc": "net_loft", "time": "dusk", "where": "indoor", "light": "oil lamp light", "weather": "still",
                 "present": ["maren_vale"], "staging": "Maren at the workbench"},
     },
     "scenes": [
@@ -80,7 +82,7 @@ def test_golden_first_picture_of_a_group():
     want = "\n\n".join([
         HEAD,
         "CAST (attached Flow characters, keep their look exactly): Maren Vale.",
-        QUAY + "\n" + QUAY_STAGING,
+        QUAY_SETTING + "\n" + QUAY + "\n" + QUAY_STAGING,
         "IN THE PICTURE:\n- Maren Vale: standing at the quay edge; hands: empty, resting on the stone wall; "
         "mood: calm.",
         "SHOT: wide, camera far back, full-length figures, surroundings clearly visible.",
@@ -94,15 +96,15 @@ def test_golden_later_picture_of_the_same_group_has_continuity_and_identical_pla
     want = "\n\n".join([
         HEAD,
         "CAST (attached Flow characters, keep their look exactly): Maren Vale, Tobias Reed.",
-        QUAY + "\n" + QUAY_STAGING + "\n" + CONT,
+        QUAY_SETTING + "\n" + QUAY + "\n" + QUAY_STAGING + "\n" + CONT,
         "IN THE PICTURE:\n- Maren Vale: turning; hands: empty, at her sides; mood: wary.\n"
         "- Tobias Reed: walking in; hands: holding nothing, arms swinging; mood: cheerful.",
         "SHOT: " + P.SHOT_TEXT["medium"] + ".",
         "SCENE: Maren looks over the water.",
         FOOT]) + "\n"
     assert later == want
-    pick = lambda t: [l for l in t.splitlines() if l.startswith(("PLACE:", "STAGING"))]
-    assert pick(first) == pick(later) and len(pick(first)) == 2
+    pick = lambda t: [l for l in t.splitlines() if l.startswith(("SETTING:", "PLACE:", "STAGING"))]
+    assert pick(first) == pick(later) and len(pick(first)) == 3 and pick(first)[0] == QUAY_SETTING
     assert [l.encode() for l in pick(first)] == [l.encode() for l in pick(later)]
     assert "CONTINUITY" not in first
 
@@ -111,7 +113,7 @@ def test_golden_text_only_person_and_others():
     want = "\n\n".join([
         HEAD,
         "CAST (attached Flow characters, keep their look exactly): Maren Vale.",
-        QUAY + "\n" + QUAY_STAGING + "\n" + CONT,
+        QUAY_SETTING + "\n" + QUAY + "\n" + QUAY_STAGING + "\n" + CONT,
         "IN THE PICTURE:\n- Maren Vale: facing Harl; hands: empty; mood: calm.\n"
         "- Old Harl: sitting by his boat; hands: both hands on his knees; mood: grave.\n"
         "ALSO IN THE PICTURE: Old Harl: stooped old man, white beard, weathered face, a faded green sweater; "
@@ -131,7 +133,7 @@ def test_golden_wearing_and_variant_with_its_own_flow_name():
     want = "\n\n".join([
         HEAD,
         "CAST (attached Flow characters, keep their look exactly): Maren Vale - Storm Coat, Tobias Reed.",
-        QUAY + "\n" + QUAY_STAGING,
+        QUAY_SETTING + "\n" + QUAY + "\n" + QUAY_STAGING,
         "IN THE PICTURE:\n- Maren Vale: bracing; hands: gripping nothing; mood: stern.\n"
         "- Tobias Reed: shouting; hands: cupped round his mouth; mood: urgent.\n"
         "WEARING (this picture only): Maren Vale: a hood pulled up against the rain",
@@ -208,3 +210,85 @@ def test_adopt_regex_matches_the_expression_in_flow_adopt():
     assert "fs.readFileSync(shot.prompt, 'utf8').split('SCENE:')[1]?.split('\\n')[0]" in src
     t = build(2)
     assert P.scene_sentence(t) == "Maren looks over the water."
+
+
+# ------------------------------------------------------------------ SETTING: indoors / outdoors, time of day
+
+def doc_with(where, time, light="a single oil lamp", loc="net_loft"):
+    g = {"loc": loc, "time": time, "light": light, "weather": "", "present": ["maren_vale"], "staging": "Maren stands"}
+    if where is not None:
+        g["where"] = where
+    return {"version": 2, "chapter": 1, "groups": {"g01": g},
+            "scenes": [scene(1, "g01", "wide", [cast("maren_vale")]), scene(2, "g01", "medium", [cast("maren_vale")])]}
+
+
+@pytest.mark.parametrize("where,time,head,tail", [
+    ("indoor", "night", "SETTING: indoors, at night.", "No daylight through windows; the only light is: a single oil lamp."),
+    ("outdoor", "night", "SETTING: outdoors, at night.", "Dark sky; no sun; light only from: a single oil lamp."),
+    ("indoor", "day", "SETTING: indoors, in daylight.", "Daylight may enter through windows; no night sky."),
+    ("outdoor", "day", "SETTING: outdoors, in daylight.", "Open sky above; natural daylight; no lamps lit unless listed."),
+    ("indoor", "dawn", "SETTING: indoors, at dawn.", "Weak first daylight may enter through windows; no night sky;"),
+    ("outdoor", "dawn", "SETTING: outdoors, at dawn.", "Open sky above with the first pale light at the horizon;"),
+    ("indoor", "dusk", "SETTING: indoors, at dusk.", "Fading daylight may enter through windows;"),
+    ("outdoor", "dusk", "SETTING: outdoors, at dusk.", "Open sky above, last light of the day"),
+])
+def test_setting_line_for_every_combination(where, time, head, tail):
+    d = doc_with(where, time)
+    line = next(l for l in build(1, d).splitlines() if l.startswith("SETTING:"))
+    assert line.startswith(head) and tail in line
+    assert line.count("SETTING:") == 1 and chr(10) not in line
+    assert set(P.SETTING_CONSEQUENCE) == {(w, t) for w in ("indoor", "outdoor") for t in ("dawn", "day", "dusk", "night")}
+
+
+def test_setting_comes_first_in_the_place_block_and_is_identical_for_every_picture_of_a_group():
+    d = doc_with("outdoor", "night", light="cold moonlight from above")
+    a, b = build(1, d), build(2, d)
+    for t in (a, b):
+        block = t.split(chr(10) * 2)[2]                      # header, cast, then the place block
+        assert block.splitlines()[0].startswith("SETTING: outdoors, at night.")
+        assert block.splitlines()[1].startswith("PLACE:") and block.splitlines()[2].startswith("STAGING")
+    pick = lambda t: [l for l in t.splitlines() if l.startswith(("SETTING:", "PLACE:", "STAGING"))]
+    assert [l.encode() for l in pick(a)] == [l.encode() for l in pick(b)] and len(pick(a)) == 3
+    assert "light only from: cold moonlight from above." in a
+
+
+def test_setting_falls_back_to_the_locations_kind_and_is_left_out_when_unknown():
+    d = doc_with(None, "night", loc="harbour_quay")                       # exterior
+    assert "SETTING: outdoors, at night." in build(1, d)
+    d = doc_with(None, "day", loc="net_loft")                             # interior
+    assert "SETTING: indoors, in daylight." in build(1, d)
+    locs = json.loads(json.dumps(LOCS))
+    locs["locations"]["net_loft"]["kind"] = "-"
+    d = doc_with(None, "day", loc="net_loft")
+    s = d["scenes"][0]
+    assert "SETTING" not in P.flow_prompt(s, d, 1, BIBLE, locs, {}, 0)
+
+
+# ---------------------------------------------------------------- "others" placeholder words are blank
+
+PLACEHOLDERS = ["empty", "Empty.", "  EMPTY ", "none", "No one", "nobody", "n/a", "na", "-", "nil", "No others",
+                "no other people", ""]
+
+
+@pytest.mark.parametrize("word", PLACEHOLDERS)
+def test_placeholder_others_is_omitted(word):
+    s = scene(3, "g01", "over-the-shoulder", [cast("maren_vale", pose="facing Harl", hands="empty", mood="calm")],
+              others=word)
+    doc = doc_of(s)
+    assert "ALSO IN THE PICTURE" not in P.flow_prompt(s, doc, 1, BIBLE, LOCS, {}, P.positions(doc)[3])
+
+
+def test_real_others_value_is_kept():
+    s = scene(3, "g01", "over-the-shoulder", [cast("maren_vale", pose="facing Harl", hands="empty", mood="calm")],
+              others="two farmers at the bar")
+    doc = doc_of(s)
+    text = P.flow_prompt(s, doc, 1, BIBLE, LOCS, {}, P.positions(doc)[3])
+    assert "ALSO IN THE PICTURE: two farmers at the bar" in text
+
+
+def test_existing_scene_file_with_others_empty_assembles_without_the_word():
+    doc = {**DOC, "scenes": [dict(s, others="empty") if s["id"] == 3 else s for s in DOC["scenes"]]}
+    text = build(3, doc)
+    also = next(l for l in text.splitlines() if l.startswith("ALSO IN THE PICTURE"))
+    assert also.startswith("ALSO IN THE PICTURE: Old Harl:")     # only the text-only person, no placeholder word
+    assert "empty" not in also.lower()
