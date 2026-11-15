@@ -834,6 +834,32 @@ def test_v1_scene_file_still_passes(book):
     assert S.check_chapter(root, 1) == ["scene 2: 5 characters, at most 4"]
 
 
+def test_scene_panel_shape_is_checked(book):
+    """An optional scene "panel" must be one of PANEL_SHAPES; a scene without it stays valid."""
+    root = ep(book)
+    (root / "bible").mkdir()
+    roster = {"style": "x", "characters": {k: {"display": k.title(), "flow_name": k.title(), "appearance": "a"}
+                                           for k in ("ann", "bo", "cy", "di", "ed")}}
+    (root / "bible" / "characters.json").write_text(json.dumps(roster), encoding="utf-8")
+    paras = S.chapter_paras(root, 1)
+    wins = S.chapter_windows(paras, "7s")
+    lock = json.loads(E.lock_path(root).read_text(encoding="utf-8"))
+    scenes = [{"id": k, "para": w[0], "characters": ["ann"], "shot": "wide",
+               "focus": [0.5, 0.5], "scene": "Ann walks along a grey stone quay at dawn while the gulls circle "
+                                             "above the harbour."} for k, w in enumerate(wins, 1)]
+    doc = {"version": 1, "chapter": 1, "pacing": "7s", "hindi_sha256": lock["00001.txt"], "note": "panel",
+           "scenes": scenes}
+    S.scenes_path(root, 1).parent.mkdir(exist_ok=True)
+    S.scenes_path(root, 1).write_text(json.dumps(doc), encoding="utf-8")
+    scenes[0]["panel"] = "portrait"
+    S.scenes_path(root, 1).write_text(json.dumps(doc), encoding="utf-8")
+    assert S.check_chapter(root, 1) == []
+    scenes[0]["panel"] = "circle"
+    S.scenes_path(root, 1).write_text(json.dumps(doc), encoding="utf-8")
+    assert S.check_chapter(root, 1) == [
+        "scene 1: panel 'circle' not one of ('wide', 'landscape', 'square', 'portrait', 'tall')"]
+
+
 def test_load_roster_falls_back_to_the_book_bible(book):
     roster = S.load_roster(ep(book))
     assert roster["version"] == 2 and "maren_vale" in roster["characters"]

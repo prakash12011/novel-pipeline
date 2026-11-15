@@ -252,11 +252,11 @@ def test_extras_root_is_under_extras(world):
 # --- logo: the "chapter needs re-render" decision ---------------------------------------------------
 
 
-def make_report(n, logo):
+def make_report(n, logo, **extra):
     root = E.root(1)
     mp4 = root / "video" / f"c{n:04d}.mp4"
-    mp4.with_suffix(".render.json").write_text(json.dumps({"captions": True, "pass": True, "logo": logo}),
-                                               encoding="utf-8")
+    mp4.with_suffix(".render.json").write_text(
+        json.dumps({"captions": True, "pass": True, "logo": logo, **extra}), encoding="utf-8")
 
 
 def test_logo_enabled_with_missing_file_is_a_clear_error(world):
@@ -321,6 +321,46 @@ def test_title_font_setting_marks_chapter_for_rerender_only_when_it_differs(worl
     assert episode_build.why_render(root, 1) is None
     set_book(world, {"video": {"title_font": "assets/fonts/PlayfairDisplay.ttf"}})
     assert episode_build.why_render(root, 1) == "title font setting changed"
+
+
+# --- video.style: a change makes the chapter video stale ---------------------------------------------
+
+
+def test_video_style_setting_marks_chapter_for_rerender_only_when_it_differs(world):
+    set_book(world)
+    make_report(1, None)                                           # an old report: no "style" key
+    assert episode_build.why_render(E.root(1), 1) is None          # the default style (kenburns): still current
+    set_book(world, {"video": {"style": "panels"}})
+    assert episode_build.why_render(E.root(1), 1) == "video style changed"
+    make_report(1, None, style="panels")
+    assert episode_build.why_render(E.root(1), 1) is None          # rendered in this style
+    set_book(world)
+    assert episode_build.why_render(E.root(1), 1) == "video style changed"
+
+
+def test_unknown_video_style_is_a_clear_error(world):
+    from novel.stages.episode import video_style
+    set_book(world, {"video": {"style": "collage"}})
+    make_report(1, None)
+    with pytest.raises(SystemExit, match="video.style 'collage': use kenburns or panels"):
+        episode_build.why_render(E.root(1), 1)
+    assert video_style({}) == "kenburns" and video_style({"video": {"style": "panels"}}) == "panels"
+
+
+# --- video.captions.enabled: a report is current when it matches the setting, either way --------------
+
+
+def test_subtitles_setting_marks_chapter_for_rerender_only_when_it_differs(world):
+    set_book(world, {"video": {"captions": {"enabled": False}}})
+    make_report(1, None, captions=False)                           # rendered without subtitles, as asked
+    assert episode_build.why_render(E.root(1), 1) is None
+    make_report(1, None, captions=True)
+    assert episode_build.why_render(E.root(1), 1) == "subtitles setting changed"
+    set_book(world)                                                # subtitles on (the default)
+    make_report(1, None, captions=False)
+    assert episode_build.why_render(E.root(1), 1) == "subtitles setting changed"
+    make_report(1, None, captions=True)
+    assert episode_build.why_render(E.root(1), 1) is None
 
 
 def test_title_card_uses_the_configured_font_and_a_plain_font_does_not_crash(world):

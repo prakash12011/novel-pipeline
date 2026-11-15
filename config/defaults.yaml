@@ -23,6 +23,8 @@ images:
   watermark: crop   # the Gemini mark on downloads: crop (cut it off), remove (novel clean; cropped where removal fails) or none
 video:
   fps: 24
+  style: kenburns   # kenburns (one full-screen picture at a time) or panels (comic panels the camera slides between)
+  panels: {paper: "#f3f0e8", dim: 0.45, captions: true}   # captions: lettered inside the active panel (not video.captions)
   logo: {enabled: false, file: assets/logo.png, position: top-left, margin: 26, opacity: 1.0, width: null}
   disclaimer: {enabled: true, seconds: 2.0, heading: "COPYRIGHT & AI DISCLAIMER", text: null}
   subscribe:

@@ -717,9 +717,63 @@ chapters:
         enabled: false
 ```
 
+### Comic panels (a second look for the video)
+
+The video can be drawn in two styles. `kenburns` (the default) shows one full-screen picture at a time. `panels` lays the chapter's pictures out as comic panels on pages: the camera rests on the panel being narrated, then slides to the next one. The pictures are the same ones; nothing is drawn again in Flow.
+
+Try it on one chapter first. This never replaces the real chapter video, because the file gets the style in its name:
+
+```cmd
+novel render --chapter 21 --end 60 --style panels
+```
+
+You see `...\video\c0021-first60s-panels.mp4` and `result: PASS`.
+
+To look at the layout of a whole chapter without rendering any video:
+
+```cmd
+novel render --chapter 21 --pages
+```
+
+It writes one picture per page into the episode's `video\c0021-pages` folder. Each panel shows its scene number (`s05` is scene 5).
+
+To use the style for the whole book, add this to `book.yaml` (or to one episode's `episode.yaml`):
+
+```yaml
+video:
+  style: panels
+```
+
+Then run `novel build`. Chapters that were drawn in the other style count as out of date and are rendered again.
+
+How a panel gets its shape: one character in the scene gives a tall panel, two give a wider one, three or more (and landscapes) give a wide one. Two panels next to each other never have the same shape. A page has at most two upright panels (`portrait` or `tall`); the rest of a page's single-character scenes get a square, landscape or wide panel. A `"panel"` you set by hand is never changed. In a tall panel the picture slides or zooms, so the whole picture is seen.
+
+To fix one panel, edit that scene in the episode's `scenes\00021.json`, then render the chapter again:
+
+- The panel shows the wrong part of the picture: change `"focus": [x, y]` to where the subject really is (0 to 1, measured from the top-left corner; `[0.7, 0.4]` is right of centre and a little above the middle).
+- The shape does not suit the picture: add `"panel": "wide"` to the scene. The shapes are `wide`, `landscape`, `square`, `portrait` and `tall`.
+
+Captions: in this style the English captions are lettered inside the panel being narrated, like the narration boxes of the Shorts reels (white boxes with a black border and shadow, capital letters, slightly tilted, popping in). A sentence is cut into short parts that fit the panel: upright panels get at most 4 words at a time, wide ones more. A caption sits at the top left of the panel, or at the bottom left when the top of the picture is much busier there (a face, a figure). There is no subtitle bar at the bottom in this style, so `video.captions.enabled: false` does not switch these off; `video.panels.captions: false` does, and so does `novel render --no-captions`. They need the English captions file, made the same way as for subtitles (`novel captions`).
+
+Two more settings change the page: `video.panels.paper` (the page colour) and `video.panels.dim` (how much the other panels fade). They are described in `docs/settings.md`.
+
 ### Picture size
 
 Pictures are downloaded from Flow at 1K (1376x768) by default. The HD step then upscales each picture for the video after the Gemini mark is removed, so the video looks the same and the downloads are faster. To download at 2K (2752x1536) instead, set `images.quality: 2K` in `book.yaml`, or pass `--quality 2K` to `novel images` for one run.
+
+### HD pictures
+
+`novel build` makes the HD pictures by itself before it renders (when chaiNNer is installed). `novel render` does not: it uses HD pictures only if they already exist, and otherwise says `0 hd pictures, 40 cleaned downloads (no hd copy yet)`. To make them for one chapter, for example before `novel render`:
+
+```cmd
+novel hd --chapters 24
+```
+
+You see one line per group of pictures, such as `40 images 1376x768: cut 77 px bottom, 69 px each side -> 1238x691 -> 2x model -> 1920x1080`, and at the end `40 hd images in N s`. The pictures go to the episode's `images\c0024\hd` folder. Then `novel render --chapter 24` uses them.
+
+Each picture gets the same treatment as in `novel build`: the Gemini mark is handled the way `images.watermark` says (`crop` cuts it off, `remove` runs `novel clean` first and uses its clean copies, `none` leaves it), a star painted into the picture gets a second trim, a 1K picture goes through chaiNNer's 2x model, and the result is exactly 1920x1080. Nothing is sent to an AI service; chaiNNer runs on this PC's graphics card.
+
+Pictures that already have an up-to-date HD copy are skipped. To try it on a few first: `novel hd --chapters 24 --limit 5`. To redo them: `--force`.
 
 ### Pictures per chapter
 
@@ -874,11 +928,14 @@ Checks this PC (Python, packages, Node, ffmpeg, Chrome, Kaggle, keys, fonts) and
 ### novel clean
 `novel clean [--book B] [--ep N] [--chapters A-B] [--force] [--sheet] [--open]`: removes the Gemini mark from the downloaded pictures of the chapters (default: every chapter of the episode that has pictures) into `images\cNNNN\clean\`, checks each result and crops the pictures where removal failed. Prints per chapter how many were removed, cropped instead (and why) or had no mark. `--force` redoes finished pictures. `--sheet` writes `clean\sheet.html`, a before/after of every picture's corner; `--open` opens it. Needs `npm ci` in `flow` once. Exit code 1 only if nothing could be done (no such chapter or episode, tool not installed).
 
+### novel hd
+`novel hd [--book B] [--ep N] [--chapters A-B] [--limit N] [--force] [--marks-only]`: makes the 1920x1080 copies of the pictures in `images\cNNNN\hd\` with chaiNNer (the same step `novel build` runs; default: every chapter of the episode that has pictures). The Gemini mark is handled as `images.watermark` says, 1K pictures are upscaled 2x. Up-to-date copies are skipped. `--limit N` does only the first N (a test). `--force` redoes them. `--marks-only` redoes only pictures that still show a painted star. Refuses an episode marked `published: true` or under `_archive`. Exit code 1 if nothing could be done (chaiNNer or its model missing, no pictures, a chapter not in the episode).
+
 ### novel status
 `novel status [--book B] [--ep N] [--all] [--json] [--chapters A-B]`: the checklist. `--all` one line per episode of the book. `--json` machine-readable. `--chapters 21-25` limits the table and verdict. Exit code 0 only when ready to build, ready to publish or published.
 
 ### novel render
-`novel render --chapter N [--book B] [--ep E] [--end SECONDS] [--no-hd] [--no-captions] [--out FILE]`: renders one chapter. `--end 30` renders only the first 30 seconds (a preview). `--no-hd` uses the cleaned downloads. `--no-captions` leaves out subtitles. `--out` also copies the file there.
+`novel render --chapter N [--book B] [--ep E] [--end SECONDS] [--style kenburns|panels] [--pages] [--no-hd] [--no-captions] [--out FILE]`: renders one chapter. `--end 30` renders only the first 30 seconds (a preview). `--style` draws it in that style whatever `video.style` says (the file is named `c0015-panels.mp4`, so it never replaces the real video). `--pages` writes the comic-panels layout as pictures (`video/c0015-pages/`) and renders no video. `--no-hd` uses the cleaned downloads. `--no-captions` leaves out subtitles. `--out` also copies the file there.
 
 ### novel build
 `novel build [--book B] [--ep E] [--chapters A-B] [--force] [--when-ready] [--no-hd] [--per-hour N]`: renders what is not current and joins the episode. `--chapters` builds part of an episode (written as `E003-c21-25.mp4`). `--force` renders again. `--when-ready` waits for missing inputs, then renders at a steady pace (`--per-hour N`, default 2). `--no-hd` skips the HD step.

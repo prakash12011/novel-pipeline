@@ -1,6 +1,10 @@
-"""novel render --chapter N [--book B] [--ep E] [--end SECONDS] [--no-hd] [--no-captions] [--out FILE]
+"""novel render --chapter N [--book B] [--ep E] [--end SECONDS] [--style kenburns|panels] [--pages] [--no-hd]
+[--no-captions] [--out FILE]
 
 Renders one chapter to video/cNNNN.mp4 (a preview, video/cNNNN-firstNs.mp4, when --end is given).
+--style draws the chapter in that style whatever video.style says; the file then gets the style in its name
+(cNNNN-panels.mp4), so a try never replaces the real chapter video. --pages writes the comic-panels layout
+as still pictures (video/cNNNN-pages/p01.jpg ...) to check the crops, and renders no video.
 Checks first that everything the render needs exists; if not, prints each missing item with the command
 that makes it and exits 1 without rendering. Exit code 1 also when the render report says it failed."""
 
@@ -13,8 +17,8 @@ from pathlib import Path
 
 from novel.core import context
 
-USAGE = ("usage: novel render --chapter N [--book B] [--ep E] [--end SECONDS] [--no-hd] [--no-captions] "
-         "[--out FILE]")
+USAGE = ("usage: novel render --chapter N [--book B] [--ep E] [--end SECONDS] [--style kenburns|panels] [--pages] "
+         "[--no-hd] [--no-captions] [--out FILE]")
 
 
 def main(argv) -> int:
@@ -26,6 +30,10 @@ def main(argv) -> int:
     ap.add_argument("--book")
     ap.add_argument("--ep", type=int)
     ap.add_argument("--end", type=float, help="render only the first N seconds (a preview)")
+    ap.add_argument("--style", choices=("kenburns", "panels"),
+                    help="draw this chapter in this style whatever video.style says (written as cNNNN-<style>.mp4)")
+    ap.add_argument("--pages", action="store_true",
+                    help="write the comic-panels layout as pictures (video/cNNNN-pages/), no video")
     ap.add_argument("--no-hd", action="store_true", help="use the cleaned downloads, not the hd pictures")
     ap.add_argument("--no-captions", action="store_true", help="leave out the English subtitles")
     ap.add_argument("--out", type=Path, help="also copy the finished video to this file")
@@ -42,7 +50,7 @@ def main(argv) -> int:
     from novel.stages import episode as E
     from novel.stages import episode_build as B
     from novel.stages import episode_hd
-    from novel.stages.episode_render import render
+    from novel.stages import episode_render
     from novel.stages.manifest import Manifest
 
     ep_root = E.root(ep).resolve()
@@ -52,7 +60,7 @@ def main(argv) -> int:
               + (f" (it has chapters {chapters[0]}-{chapters[-1]})" if chapters else " (no manifest.json yet)"))
         return 1
 
-    captions = not a.no_captions and B.captions_on(ep, a.chapter)
+    captions = not a.no_captions and not a.pages and B.captions_on(ep, a.chapter, a.style)
     hd = episode_hd.hd_plan(E.cfg(ep, a.chapter), no_hd=a.no_hd, needs_tool=False)["use_pictures"]
     missing = B.missing_inputs(ep_root, ep, a.chapter, captions=captions)
     short = {a.chapter: missing} if missing else {}
@@ -61,8 +69,20 @@ def main(argv) -> int:
         print("nothing was rendered.")
         return 1
 
+    if a.pages:
+        try:
+            files = episode_render.pages(ep, a.chapter, hd)
+        except SystemExit as e:
+            print(f"pages failed: {e}")
+            return 1
+        print(f"\n{files[0].parent}")
+        for f in files:
+            print(f"  {f.name}")
+        return 0
+
     try:
-        report = render(ep, a.chapter, "20", "fast", max(1, mp.cpu_count() - 2), a.end, None, captions, hd)
+        report = episode_render.render(ep, a.chapter, "20", "fast", max(1, mp.cpu_count() - 2), a.end, None,
+                                       captions, hd, a.style)
     except SystemExit as e:
         print(f"render failed: {e}")
         return 1

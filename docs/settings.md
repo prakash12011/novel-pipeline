@@ -114,11 +114,15 @@ Keys marked "Not read" or "Not used" are in the file for later; changing them do
 | `video.subscribe.silent_after` | `null` | Chapter only: `true` forces a silent card after this chapter, `false` removes it, empty follows `every_chapters`. | default, PC, book, episode, **chapter** |
 | `video.subscribe.card_text` | `null` | The card's four lines: heading, button, reactions, tagline. Empty = the standard card. | default, PC, book, episode, **chapter** |
 | `video.subscribe.spoken_lines` | `[]` | The narrated subscribe message, one paragraph per item. Empty = the standard message. | default, PC, book, episode, **chapter** |
-| `video.captions.enabled` | `true` | Burn English subtitles into the video. | default, PC, book, episode, **chapter** |
+| `video.captions.enabled` | `true` | Burn English subtitles into the video (`kenburns` style; the `panels` style uses `video.panels.captions`). | default, PC, book, episode, **chapter** |
 | `video.captions.font_file` | `assets/fonts/NotoSans-SemiBold.ttf` | Font file for subtitles (`assets/...` is inside the repo). | default, PC, book, episode, **chapter** |
 | `video.captions.font_name` | `"Noto Sans SemiBold"` | The font's name as ffmpeg should call it. | default, PC, book, episode, **chapter** |
 | `video.captions.size` | `38` | Subtitle font size. | default, PC, book, episode, **chapter** |
 | `video.captions.max_line` | `84` | Most characters on one subtitle line. | default, PC, book, episode, **chapter** |
+| `video.style` | `kenburns` | How chapter videos are drawn: `kenburns` shows one full-screen picture at a time with a slow camera move; `panels` lays the pictures out as comic panels and slides from one to the next. Changing it makes the chapter videos count as out of date, so `novel build` renders them again. | default, PC, book, episode |
+| `video.panels.paper` | `"#f3f0e8"` | The page colour behind the panels (`panels` style only), as `"#rrggbb"`. | default, PC, book, episode |
+| `video.panels.dim` | `0.45` | How far the panels that are not being narrated fade toward the page colour, 0 (not at all) to 1 (invisible) (`panels` style only). | default, PC, book, episode |
+| `video.panels.captions` | `true` | English captions lettered inside the panel being narrated, in the Shorts reels' narration-box look (`panels` style only; there `video.captions.enabled` is not used). `false` = no captions. | default, PC, book, episode, **chapter** |
 | `video.title_font` | `assets/fonts/PlayfairDisplay.ttf` | Font file for the chapter title cards (`assets/...` is inside the repo, otherwise a full path). Changing it makes the chapter videos count as out of date, so `novel build` renders them again. | default, PC, book, episode |
 | `video.disclaimer_font` | `assets/fonts/NotoSans-Regular.ttf` | Regular font for the disclaimer and subscribe cards. | default, PC, book, episode |
 | `video.disclaimer_font_bold` | `assets/fonts/NotoSans-SemiBold.ttf` | Bold font for the disclaimer and subscribe cards. | default, PC, book, episode |

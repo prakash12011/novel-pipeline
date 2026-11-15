@@ -32,6 +32,7 @@ COMMANDS = [
     ("images", "Generate missing images in Flow", "novel.commands.images_cmd:main"),
     ("sheet", "Write a contact sheet for one chapter", "novel.commands.sheet_cmd:main"),
     ("clean", "Remove the Gemini mark from downloaded pictures", "novel.commands.clean_cmd:main"),
+    ("hd", "Make the 1920x1080 copies of the pictures (mark handled, 1K upscaled)", "novel.commands.hd_cmd:main"),
     ("status", "Show what is ready and what is missing", "novel.commands.status_cmd:main"),
     ("render", "Render one chapter", "novel.commands.render_cmd:main"),
     ("build", "Render chapters and join the episode", "novel.commands.build_cmd:main"),

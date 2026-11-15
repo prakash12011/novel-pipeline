@@ -45,6 +45,8 @@ SHOTS = ("establishing", "wide", "medium", "close-up", "over-the-shoulder",
          "low-angle", "high-angle", "detail")
 # Scene files v2 (written by `novel import`): no close-up (Flow filled the frame with a face).
 SHOTS_V2 = ("wide", "establishing", "medium", "over-the-shoulder", "low-angle", "high-angle", "detail")
+# Comic-panel shapes a scene may ask for with an optional "panel" key (video.style: panels).
+PANEL_SHAPES = ("wide", "landscape", "square", "portrait", "tall")
 # Image prompts never ask for these. The book has violence; the pictures show
 # its moment, not its gore.
 BANNED = re.compile(r"(?i)\b(nude|naked|nudity|sex|sexual|breasts?|lingerie|underwear|"
@@ -243,6 +245,8 @@ def check_chapter(ep_root: Path, n: int) -> list[str]:
         if not (isinstance(focus, list) and len(focus) == 2
                 and all(isinstance(f, (int, float)) and 0 <= f <= 1 for f in focus)):
             problems.append(f"{tag}: focus must be [x, y] between 0 and 1")
+        if "panel" in s and s["panel"] not in PANEL_SHAPES:
+            problems.append(f"{tag}: panel {s['panel']!r} not one of {PANEL_SHAPES}")
     return problems
 
 

@@ -56,6 +56,18 @@ def series_label() -> str:
     return b.get("series_label") or b.get("title") or ""
 
 
+VIDEO_STYLES = ("kenburns", "panels")
+
+
+def video_style(cfg: dict) -> str:
+    """video.style as written in the settings (stored in the render report: a change makes the chapter
+    video stale). Reports from before this setting have no entry and mean kenburns."""
+    value = str(((cfg or {}).get("video") or {}).get("style") or "kenburns")
+    if value not in VIDEO_STYLES:
+        raise SystemExit(f"video.style '{value}': use kenburns or panels")
+    return value
+
+
 def info(ep_root: Path) -> dict:
     return json.loads((ep_root / "episode.json").read_text(encoding="utf-8"))
 
