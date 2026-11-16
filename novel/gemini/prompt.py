@@ -379,6 +379,61 @@ Rules:
 - "focus": where the main subject is, [0..1, 0..1] from the top-left.
 """
 
+
+def _swap(text: str, old: str, new: str) -> str:
+    """text with `old` replaced by `new`; asserts `old` is there, so a later edit of PART_B cannot silently
+    break a variant built from it."""
+    assert old in text, f"PART_B changed: cannot find {old[:50]!r} to swap"
+    return text.replace(old, new)
+
+
+def _tight_part_b(part_b: str) -> str:
+    """PART_B for an image model that does better with a close camera and at most two people (framing "tight"):
+    only the cast, position, shot and action bullets change; the schema lines and field names stay the same."""
+    part_b = _swap(
+        part_b,
+        '''Someone only
+  mentioned, remembered or heard is not in the picture. Fewer people is better: show who the moment is about. A
+  window in which nobody is visible (a description of a place, an object, a letter) gets an empty cast [] and an
+  "establishing" or "detail" shot.''',
+        '''Someone only
+  mentioned, remembered or heard is not in the picture. The camera is CLOSE in this series: one person per picture is
+  best, two only when the moment is between those two; show who the moment is about. Never a crowd: anyone else goes in
+  "others", as blurred background at most. A window in which nobody is visible (a description of a place, an object, a
+  letter) gets an empty cast [] and an "establishing" or "detail" shot.''')
+    part_b = _swap(
+        part_b,
+        '''- "position" (each cast member): where that person is in the frame and in the place, in plain words: "left foreground,
+  by the door", "centre, seated at the table", "far right, in the background". Required. Two people in one picture
+  never share a position, and the positions stay the same inside a group unless the narration moves someone.''',
+        '''- "position" (each cast member): where that person is in the FRAME only, in plain words: "left", "centre" or "right",
+  plus "in front" or "behind" when two people overlap in depth. Required. Two people in one picture never share a
+  position, and each person keeps their side inside a group unless the narration moves them.''')
+    part_b = _swap(
+        part_b,
+        '''- "shot": one of wide, establishing, medium, over-the-shoulder, low-angle, high-angle, detail. Inside a group, change
+  the camera between images; never the same shot three times in a row; "medium" for at most a third.''',
+        '''- "shot": one of wide, establishing, medium, over-the-shoulder, low-angle, high-angle, detail. The camera stays close.
+  "medium" is one or two people from the waist up and is the normal shot. "over-the-shoulder" is two people from the
+  chest up, one of them seen from behind. "low-angle" and "high-angle" are one person from the knees up. "detail" is an
+  OBJECT ALONE: its cast is empty [], and no person and no hand is in the picture; when a person holds or uses the
+  object, use "medium" instead. "wide" and "establishing" are ONLY for a window with an empty cast, or for the first
+  image of a group. Inside a group, change the camera between images; never the same shot three times in a row.''')
+    return _swap(
+        part_b,
+        '''- "action": English. What is VISIBLE at that moment: who does what, where, with what expression, using display
+  names, never keys. Do not describe characters' clothes or faces. Cards, letters, books and signs show no readable
+  words. Family-friendly: violence is the threat, the swing, the impact or a silhouette, never wounds; never the
+  words {BANNED}. Everyone fully clothed.''',
+        '''- "action": English. What is VISIBLE at that moment: who does what, where, with what expression, using display names,
+  never keys. Name the spot inside the place where this picture happens (by the oven, at the doorway, beside the fallen
+  pillar): the image model is told nothing else about where people stand. Do not describe characters' clothes or faces.
+  Cards, letters, books and signs show no readable words. Family-friendly: violence is the threat, the swing, the
+  impact or a silhouette, never wounds; never the words {BANNED}. Everyone fully clothed.''')
+
+
+PART_B_TIGHT = _tight_part_b(PART_B)
+
 FIRST_RULE_FULL = ("Exactly one image line for every marker ({1}, {2}, ...) in the HINDI block, same numbers.")
 FIRST_RULE_SCENES = "Exactly one image line for every window, same numbers."
 
@@ -435,9 +490,24 @@ EXAMPLE_IMAGE = {
 }
 
 
-def example_block() -> str:
+# The same moment with a close camera: positions are sides of the frame and the action names the spot.
+EXAMPLE_IMAGE_TIGHT = {
+    **EXAMPLE_IMAGE, "shot": "medium",
+    "cast": [
+        {**EXAMPLE_IMAGE["cast"][0], "position": "left"},
+        {**EXAMPLE_IMAGE["cast"][1], "position": "right"},
+    ],
+    "action": ("Maren stands behind the fruit stall, beside the scale, while Tobias leans toward her across a crate "
+               "of apples and points at it with one finger, asking a question. Gulls circle above the harbour wall "
+               "and the low sun lights the scene from the left."),
+}
+FRAMINGS = ("wide", "tight")
+
+
+def example_block(framing: str = "wide") -> str:
     g = json.dumps(EXAMPLE_GROUP, ensure_ascii=False, separators=(",", ":"))
-    i = json.dumps(EXAMPLE_IMAGE, ensure_ascii=False, separators=(",", ":"))
+    i = json.dumps(EXAMPLE_IMAGE_TIGHT if framing == "tight" else EXAMPLE_IMAGE, ensure_ascii=False,
+                   separators=(",", ":"))
     return ("EXAMPLE (format only: invented content, not from any real novel)\n"
             "===== BEGIN IMAGES c0001 -> inbox/c0001.images.jsonl =====\n"
             "```jsonl\n" + g + "\n" + i + "\n```\n"
@@ -525,12 +595,16 @@ continue from the last complete paragraph.
 def build_rules(part: str, *, channel: str, title: str, first: int, last: int, paced: float,
                 chars_per_second: float, max_characters: int, chapter: int | None = None,
                 window_count: int | None = None, review: bool = False, target: int = 800, low: int = 640,
-                high: int = 960) -> str:
+                high: int = 960, framing: str = "wide") -> str:
     """The rules text of ONE API call, taken from the same sections `build_prompt` uses but without the
     conversation part ("how we work", "type next"): part is "translate" (the Hinglish narration of a chapter),
     "bible" (the BIBLE block of a batch) or "images" (the IMAGES block of one chapter, scenes mode).
-    target / low / high: translate.target_words and the band around it (words of the narration)."""
+    target / low / high: translate.target_words and the band around it (words of the narration).
+    framing (images only): "wide" is the camera far back (Google Flow); "tight" is a close camera, at most two
+    people and no group staging (an open image model)."""
     from novel.stages import episode_translate as T
+    if framing not in FRAMINGS:
+        raise PromptError(f"framing must be one of {', '.join(FRAMINGS)}, not {framing!r}")
     ex = chapter if chapter is not None else first
     values = {
         "channel": channel, "title": title, "first": first, "last": last, "batch": batch_id(first, last),
@@ -552,7 +626,8 @@ def build_rules(part: str, *, channel: str, title: str, first: int, last: int, p
         parts = [ROLE_API, HOW_API, BLOCK_FORMAT_API, PART_C + (REVIEW_TASK if review else "")]
     elif part == "images":
         scenes_rules = PART_A_SCENES.replace("The attached windows file cuts", "The WINDOWS section of the request cuts")
-        parts = [ROLE_API, HOW_API, BLOCK_FORMAT_API, scenes_rules, PART_B, PART_C, example_block()]
+        parts = [ROLE_API, HOW_API, BLOCK_FORMAT_API, scenes_rules, PART_B_TIGHT if framing == "tight" else PART_B,
+                 PART_C, example_block(framing)]
     else:
         raise PromptError(f"internal: unknown rules part {part!r}")
     return fill("\n".join(parts), values)

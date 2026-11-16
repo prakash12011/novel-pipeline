@@ -30,6 +30,8 @@ COMMANDS = [
     ("tts", "push | status | pull | watch | reset", "novel.commands.tts_cmd:main"),
     ("captions", "Write English subtitle text", "novel.commands.captions_cmd:main"),
     ("images", "Generate missing images in Flow", "novel.commands.images_cmd:main"),
+    ("ktrial", "Trial: pictures from FLUX.3 klein on Kaggle (scenes | prompts | up | url | status | down | run | report)",
+     "novel.commands.ktrial_cmd:main"),
     ("sheet", "Write a contact sheet for one chapter", "novel.commands.sheet_cmd:main"),
     ("clean", "Remove the Gemini mark from downloaded pictures", "novel.commands.clean_cmd:main"),
     ("hd", "Make the 1920x1080 copies of the pictures (mark handled, 1K upscaled)", "novel.commands.hd_cmd:main"),

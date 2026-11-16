@@ -5,6 +5,7 @@ secrets.env
 *.token
 access_token*
 HF_TOKEN*
+NGROK_AUTHTOKEN*
 kaggle.json
 .kaggle-profiles.json
 node_modules/

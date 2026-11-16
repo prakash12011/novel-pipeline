@@ -922,6 +922,17 @@ Checks this PC (Python, packages, Node, ffmpeg, Chrome, Kaggle, keys, fonts) and
 ### novel images
 `novel images [--book B] [--ep N] [--chapters A-B] [--max N] [--batch K] [--resend ID] [--upgrade] [--quality 1K|2K] [--i-checked-flow] [--dry-run]`: makes pictures in Flow. Without `--chapters` it takes the next `images.chapters_per_day` chapters that have work. `--max` caps pictures this run. `--batch K` sends K prompts side by side. `--resend c0021-s05` sends one picture again on purpose. `--upgrade` upgrades 1K pictures to 2K. `--quality 2K` (or `1K`) sets the download size for this run only; the default is `images.quality`, which is 1K. `--i-checked-flow` after a Flow stop. `--dry-run` shows what it would do and the command, runs nothing.
 
+### novel ktrial
+A trial, kept apart from production: pictures for one chapter from the open model FLUX.3 klein, run in ComfyUI on a Kaggle T4 and reached through a tunnel. Everything is written to `<book>/_work/ktrial/cNNNN/`; the episode and the bible are never changed.
+- `novel ktrial scenes --chapter N [--book B] [--ep E] [--max-characters 2] [--from-production] [--force]`: asks Gemini for the chapter's picture lines with the close-framing rules. `--from-production` copies the existing scene file instead.
+- `novel ktrial prompts --chapter N`: writes the prompts, the place-plate prompts, the character references and `plan.json`. No GPU.
+- `novel ktrial up --chapter N [--account NAME] [--tunnel ngrok|cloudflared] [--domain HOST] [--idle-minutes 20] [--max-hours 6] [--gpu 1] [--comfy-arg=ARG] [--dry-run] [--no-wait]`: starts the ComfyUI server on Kaggle. With your ngrok dev domain (`--domain`, remembered in `<kaggle home>/ngrok-domain`, or `NOVEL_NGROK_DOMAIN`) the address is fixed and `up` waits until the server answers; without one it prints how to find the address on the notebook page.
+- `novel ktrial url --chapter N ADDRESS`: stores the server's address by hand when no fixed domain is set, then checks that it answers.
+- `novel ktrial status --chapter N`: Kaggle's state, the speed probe and the address.
+- `novel ktrial down --chapter N`: stops the server.
+- `novel ktrial run --chapter N [--only s05,g02] [--limit N] [--reroll] [--redo] [--plates-only] [--via kaggle|openrouter] [--resolution 1K|2K] [--budget D]`: makes the missing pictures (place plates first). `--reroll` tries the next seed, `--redo` the same seed again.
+- `novel ktrial report --chapter N`: `report.html`, each window's Flow picture beside the trial picture, with the panel cutouts.
+
 ### novel sheet
 `novel sheet --chapter N [--book B] [--ep E] [--open]`: web page of one chapter's pictures with their text. `--open` opens it.
 
