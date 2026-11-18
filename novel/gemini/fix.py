@@ -154,8 +154,8 @@ def build(ep_root: Path, n: int, with_warnings: bool = False) -> Fix:
         lines += ["```", end_line("PATCH", n)]
     if fx.hindi:
         lines += ["", "TEXT: the narration itself also needs changes (see the problems about paragraphs). Send a "
-                      "COMPLETE replacement of the Hindi of this chapter in one more block: the chapter heading, "
-                      "then the paragraphs with the picture markers {1}, {2}... as before.", "",
+                      "COMPLETE replacement of the Hindi of this chapter in one more block: only the paragraphs "
+                      "(no chapter heading line) with the picture markers {1}, {2}... as before.", "",
                   begin_line("HINDI", n), "<the full Hindi text of the chapter, with the markers>", end_line("HINDI", n)]
         fx.notes.append("the HINDI import is not built yet: the request is generated, but novel import only keeps "
                         "the HINDI block in the inbox for now")

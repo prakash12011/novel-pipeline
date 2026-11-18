@@ -26,8 +26,20 @@ QUAY_SETTING = ("Outdoors, at dawn. Open sky above with the first pale light at 
 LOFT_BLOCK = ("A long attic room above the boat shed. Bare wooden beams, nets hung from hooks along both walls, a "
               "workbench under a round window, wooden floats in baskets, a narrow ladder in the floor and one oil "
               "lamp on a chain above the bench.")
-CLOSING_PEOPLE = ("Exactly one of each named person. No text, speech bubbles, captions or borders. Hands are drawn "
-                  "simply and correctly, five fingers each. Any page, book, letter or sign is blank, with no writing.")
+CLOSING_PEOPLE = ("Exactly one of each named person, in a single scene: not a reference sheet, no multiple views. "
+                  "No text, speech bubbles, captions or borders. Hands are drawn "
+                  "simply and correctly, five fingers each. Eyes are drawn cleanly: solid coloured irises and dark pupils, at most one tiny highlight, no white marks, spots or glare on the eyes. Any page, book, letter or sign is blank, "
+                  "with no writing.")
+def lock(name, n):
+    return (f"Draw {name} once, taking only who they are from <ref_image_{n}>: face shape, hair, skin tone, clothes and "
+            "drawing style. The pose and the facial expression come from this scene, not from the reference.")
+
+
+def face(name, mood, ref=True):
+    return f"{name}'s face in this picture: {mood}; subtle but clearly visible" + \
+        (", not the neutral face of the reference." if ref else ".")
+
+
 CLOSING_NOBODY = ("Nobody in the picture. No text, speech bubbles, captions or borders. "
                   "Any page, book, letter or sign is blank, with no writing.")
 FLOW_FOOTER_WORDS = ("STAGING", "CONTINUITY", "FRAMING", "SAFE AREA", "WIDE shot", "Keep every attached character")
@@ -85,12 +97,14 @@ def test_golden_two_people_with_references():
         "<ref_image_0> is Maren Vale. <ref_image_1> is Tobias Reed. <ref_image_2> is the place.",
         f"PLACE: Harbour Quay. {QUAY_SETTING} Keep the place of <ref_image_2>: the same walls, ground, furniture and "
         "light.",
-        f"- Maren Vale (<ref_image_0>): {MAREN}. left foreground, by the rail; turning; mood: wary.\n"
-        f"- Tobias Reed (<ref_image_1>): {TOBIAS}. right, a step behind; walking in; hands: holding nothing, arms "
-        "swinging; mood: cheerful. Wearing in this picture: a borrowed grey scarf.",
-        "SHOT: medium shot from the chest up, the person large in the frame, hands out of the frame unless they hold "
-        "something.",
+        f"- Maren Vale (<ref_image_0>): {MAREN}. {lock('Maren Vale', 0)} {face('Maren Vale', 'wary')} left foreground, by the rail; turning.\n"
+        f"- Tobias Reed (<ref_image_1>): {TOBIAS}. {lock('Tobias Reed', 1)} {face('Tobias Reed', 'cheerful')} right, a step behind; walking in; hands: holding "
+        "nothing, arms swinging. Wearing in this picture: a borrowed grey scarf.",
+        "SHOT: medium shot from the waist up, the person in front, with the place and the people around them "
+        "visible behind.",
         "SCENE: Maren turns toward Tobias as he walks along the quay.",
+        "Maren Vale and Tobias Reed each appear only once. Every other person in the picture is a different person, "
+        "with a clearly different face, hair and clothes from Maren Vale and Tobias Reed.",
         CLOSING_PEOPLE]) + "\n"
     r = build(2)
     assert r["text"] == want
@@ -98,7 +112,7 @@ def test_golden_two_people_with_references():
                          {"role": "character", "key": "tobias_reed", "var": "base", "display": "Tobias Reed"},
                          {"role": "place", "group": "g01"}]
     assert r["seed"] == K.seed_for(1, "s02")
-    assert len(r["text"]) < 1300
+    assert len(r["text"]) < 2300                     # the eye, "only once" and face sentences (2026-11-18)
 
 
 def test_each_character_has_exactly_one_reference():
@@ -109,7 +123,8 @@ def test_each_character_has_exactly_one_reference():
     # one sentence per reference, one "(<ref_image_n>)" per person line; nobody is named twice
     assert r["text"].count("<ref_image_0> is") == 1 and r["text"].count("(<ref_image_0>)") == 1
     assert r["text"].count("<ref_image_1> is") == 1 and r["text"].count("(<ref_image_1>)") == 1
-    assert r["text"].count("Maren Vale") == 2 and r["text"].count("Tobias Reed") == 2    # sentence + line each
+    # sentence, line, lock, and twice in the "only once" guard
+    assert r["text"].count("Maren Vale") == 6 and r["text"].count("Tobias Reed") == 6    # + the face sentence
 
 
 def test_a_person_listed_twice_with_the_same_variant_gets_one_reference():
@@ -123,10 +138,10 @@ def test_text_only_person_gets_no_reference_and_is_described():
     assert [x.get("key") or x["role"] for x in r["refs"]] == ["maren_vale", "place"]
     t = r["text"]
     assert "<ref_image_0> is Maren Vale. <ref_image_1> is the place." in t
-    assert f"- Old Harl: {HARL}. right; sitting by his boat; hands: both hands on his knees; mood: grave." in t
+    assert f"- Old Harl: {HARL}. {face('Old Harl', 'grave', ref=False)} right; sitting by his boat; hands: both hands on his knees." in t
     assert "Old Harl (" not in t and "<ref_image_2>" not in t
     assert "Keep the place of <ref_image_1>:" in t                         # numbering follows the real references
-    assert "Background: two gulls on a post, small and blurred." in t
+    assert "Also in the picture: two gulls on a post." in t
 
 
 def test_empty_cast():
@@ -159,11 +174,11 @@ def test_hands_piece_is_left_out_when_empty_and_kept_otherwise():
     def line(hands):
         s = scene(1, "g01", "medium", [cast("maren_vale", position="left", pose="standing", hands=hands, mood="calm")])
         return next(l for l in K.klein_prompt(s, DOC, 1, BIBLE, LOCS)["text"].splitlines() if l.startswith("- "))
-    assert line("empty, at her sides").endswith(f"{MAREN}. left; standing; mood: calm.")
+    assert line("empty, at her sides").endswith(f"{lock('Maren Vale', 0)} {face('Maren Vale', 'calm')} left; standing.")
     assert "hands" not in line("empty, at her sides")
     for text in ("empty", "Empty-handed", "  EMPTY, relaxed. ", ""):
         assert "hands" not in line(text), text
-    assert line("holding one card").endswith(f"{MAREN}. left; standing; hands: holding one card; mood: calm.")
+    assert line("holding one card").endswith(f"{lock('Maren Vale', 0)} {face('Maren Vale', 'calm')} left; standing; hands: holding one card.")
     assert "hands: holding nothing" in line("holding nothing")        # only a leading "empty" drops the piece
 
 
@@ -238,7 +253,8 @@ def test_variant_look_and_wearing_and_empty_pieces():
     r = K.klein_prompt(s, DOC, 2, BIBLE, LOCS)
     line = next(l for l in r["text"].splitlines() if l.startswith("- "))
     assert line == ("- Maren Vale (<ref_image_0>): tall woman in her thirties, short dark hair, grey eyes, a heavy yellow "
-                    "oilskin coat. hands: gripping nothing; mood: stern. Wearing in this picture: a hood pulled up.")
+                    f"oilskin coat. {lock('Maren Vale', 0)} {face('Maren Vale', 'stern')} hands: gripping nothing. Wearing in this "
+                    "picture: a hood pulled up.")
     assert ";;" not in r["text"] and "; ;" not in r["text"]
     assert r["refs"][0]["var"] == "storm_coat"
 
@@ -342,8 +358,8 @@ def test_each_shot_name_has_its_instruction():
     assert K.KSHOT_TEXT == {
         "wide": "wide view of the place, people small and full length",
         "establishing": "establishing view of the whole place, no person in focus",
-        "medium": "medium shot from the chest up, the person large in the frame, hands out of the frame unless they "
-                  "hold something",
+        "medium": "medium shot from the waist up, the person in front, with the place and the people around them "
+                  "visible behind",
         "over-the-shoulder": "over-the-shoulder shot, both people from the chest up, one seen from behind",
         "low-angle": "low camera looking up, from the knees up",
         "high-angle": "high camera looking down, from the knees up",
@@ -383,3 +399,30 @@ def test_variant_outside_its_chapters_is_an_error():
     s = scene(1, "g01", "wide", [cast("maren_vale", var="storm_coat")])         # the storm coat covers chapter 2 only
     with pytest.raises(PromptError):
         K.klein_prompt(s, DOC, 1, BIBLE, LOCS)
+
+
+def test_clothes_clause_is_dropped_only_when_a_reference_decides_the_clothes():
+    m = {"display": "Lumian Lee", "look": "tall lad, black hair, wearing a linen shirt and a brown coat",
+         "cast": {"position": "left", "pose": "standing"}}
+    assert "linen" not in K._person_line(m, 0) and "tall lad, black hair." in K._person_line(m, 0)
+    assert "wearing a linen shirt" in K._person_line(m, None)      # no reference: the text is all there is
+
+
+def test_groups_of_one_place_and_time_share_one_plate():
+    doc = json.loads(json.dumps(DOC))
+    doc["groups"]["g03"] = {**doc["groups"]["g01"], "light": "later light"}
+    doc["scenes"].append(scene(6, "g03", "medium", [cast("maren_vale")]))
+    pl = K.plan(doc, 1, BIBLE, LOCS)
+    assert [p["group"] for p in pl["plates"]] == ["g01", "g02"]
+    last = pl["shots"][-1]
+    assert last["group"] == "g03" and last["refs"][-1] == {"role": "place", "group": "g01"}
+
+
+def test_plan_without_plates_has_no_place_picture_and_describes_the_place():
+    pl = K.plan(DOC, 1, BIBLE, LOCS, plates=False)
+    assert pl["plates"] == [] and len(pl["shots"]) == len(DOC["scenes"])
+    for sh, s in zip(pl["shots"], DOC["scenes"]):
+        assert sh["n"] == s["id"] and sh["group"] == s["group"]
+        assert all(r["role"] == "character" for r in sh["refs"]) and "is the place" not in sh["text"]
+        assert sh["text"] == K.klein_prompt(s, DOC, 1, BIBLE, LOCS, plate=False)["text"]
+    assert QUAY_BLOCK in pl["shots"][0]["text"]

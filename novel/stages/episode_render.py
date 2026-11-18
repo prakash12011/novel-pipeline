@@ -110,7 +110,8 @@ _S: dict = {}          # per-worker state: plan, image paths, title layers, sour
 def _init(state: dict) -> None:
     _S.update(state)
     _S["cache"] = OrderedDict()
-    _S["title_layers"] = _title_layers(state["title"]) if state["title"] else None
+    _S["title_layers"] = _title_layers(state["title"]) if state["title"] and state["title"].get("show", True) \
+        else None
 
 
 def _source(k: int, zmax: float):
@@ -233,7 +234,8 @@ def _title_layers(title: dict):
     rows = []                                          # (text, font, colour, spacing px), top to bottom
     if title["series"]:
         rows.append((title["series"].upper(), ser_f, (244, 232, 204), 0.22 * 30))
-    rows.append((f"Chapter {title['chapter']}", chap_f, (244, 232, 204), 0))
+    if title.get("layout") != "episode":               # the old card: "Chapter N" above the chapter name
+        rows.append((f"Chapter {title['chapter']}", chap_f, (244, 232, 204), 0))
     rows += [(ln, name_f, (255, 255, 255), 0) for ln in lines]
     heights = [round(f.size * (1.1 if f is name_f else 1.3)) for _, f, _, _ in rows]
     # 14 px between rows (CSS gap), none between wrapped lines of the name.
@@ -330,15 +332,19 @@ def _plan_title(ep_root: Path, n: int, style: str = "kenburns"):
         focus = [tuple(s.get("focus", [0.5, 0.5])) for s in nar["scenes"]]
         pl = plan(nar["starts"], nar["audio"], focus)
     info = E.info(ep_root)
-    heading_end = nar["para_starts"].get(1, 3.0)       # paragraph 0 is the chapter heading
+    from .episode_scenes import chapter_paras
+    from .heading import body_start
+    # Older chapters open with a spoken heading (paragraph 0); new ones start with the story.
+    heading_end = nar["para_starts"].get(1, 3.0) if body_start(chapter_paras(ep_root, n)) else 0.0
     cfg = E.cfg(info["episode"], n)
-    # The panels style letters every sentence as a caption, so its title card lasts only while the narrator
-    # reads the chapter heading: it is gone when the story starts, and the first sentence's caption with it.
-    dur = LEAD + heading_end if style == "panels" else min(10.0, max(4.0, LEAD + heading_end + 2.5))
-    title = {"dur": round(dur, 3), "chapter": n,
+    # The title card shows only the episode number, over the first chapter of the episode; other chapters
+    # (and extras such as the intro hook) have none. The panels style letters every sentence as a caption,
+    # so its card is short: gone soon after the story starts, and the first caption with it.
+    show = n == info["start"] and not info.get("extra")
+    dur = max(3.0, LEAD + heading_end) if style == "panels" else min(10.0, max(4.0, LEAD + heading_end + 2.5))
+    title = {"dur": round(dur, 3) if show else 0.0, "show": show, "chapter": n,
              "font": str(title_font_file(cfg)), "font_setting": title_font_setting(cfg),
-             "name": chapter_title(ep_root, n),
-             "series": f"{series_label()} · Episode {info['episode']}" if n == info["start"] else ""}
+             "name": f"Episode {info['episode']}", "series": "", "layout": "episode"}
     return nar, pl, title
 
 
@@ -421,13 +427,14 @@ def render(ep: int, n: int, crf: str, preset: str, workers: int, end: float | No
         # absolute, escaped path plus the bundled fonts folder: nothing depends on ffmpeg's working directory
         sub = "," + C.chapter_ass_filter(ep_root, n, ass)
     nar, pl, title = _plan_title(ep_root, n, style)
-    wm = CL_mode(ep_root, n)
+    is_extra = E.info(ep_root).get("extra")             # an extra (the intro hook): its own pictures, no Flow mark
+    wm = "none" if is_extra else CL_mode(ep_root, n)
     images = chapter_images(ep_root, n, nar["scenes"], hd, wm)
     cues = panel_cues(ep_root, n, pl, title, images) if captions and style == "panels" else []
 
     total = end if end else pl["total"]
     nframes = round(total * FPS)
-    tag = f"-{style}" if style != setting else ""        # a try of the other style: never the real file's name
+    tag = f"-{style}" if style != setting and not is_extra else ""   # a try of the other style: never the real name
     out = ep_root / "video" / f"c{n:04d}{f'-first{int(end)}s' if end else ''}{tag}.mp4"
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd = ["ffmpeg", "-v", "error", "-y",

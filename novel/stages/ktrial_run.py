@@ -18,6 +18,13 @@ Guards, each for a way this could go wrong:
     running. With ngrok the tunnel is opened on the account's fixed dev domain, so the address is known before the
     server starts; without a domain the user copies the address from the notebook page (`novel ktrial url`).
 
+`up --model minimax-h3` starts the same server with MiniMax-H3-Image (GGUF) instead of FLUX.3 klein: the model is stored
+in the session and in server.json (FLUX stays the default), and `run` then makes the pictures into
+<trial>/minimax-h3/ (plates/, images/, log.jsonl; each with its sent prompt and meta file), so the FLUX pictures stay.
+`up --model qwen-image-turbo` does the same for Qwen-Image-2.1-Turbo (INT8): pictures go to <trial>/qwen-image-turbo/,
+with the place plate sent as the first reference (Qwen edits `image_1`). `up --ngrok-dataset SLUG` takes the ngrok token
+from another private Kaggle dataset of the account (default `ngrok-token`), for a second ngrok account.
+
 Test hook: $NOVEL_KTRIAL_URL_OVERRIDE replaces the address computed from a domain (`https://<host>`) in `up` and `url`,
 so a test can point the "domain" at a local fake ComfyUI. Never set it for real use.
 
@@ -58,7 +65,9 @@ NOTEBOOK = REPO / "kaggle" / "comfy_server.ipynb"
 JPEG_QUALITY = 92
 SMALL_BYTES = 50_000            # below this a picture is kept but flagged (a very dark one can be small)
 MAX_FAILS_IN_ROW = 3
-OR_DIR = "nanobanana21"         # the --via openrouter pictures, next to the Kaggle ones in the trial folder
+# the --via openrouter pictures, next to the Kaggle ones in the trial folder; $NOVEL_OPENROUTER_DIR replaces the name
+# (set it together with $NOVEL_OPENROUTER_MODEL so one model's pictures never overwrite another's)
+OR_DIR = os.environ.get("NOVEL_OPENROUTER_DIR", "").strip() or "nanobanana21"
                                 # (was "openrouter": the FLUX.3 klein pictures stay there)
 DEFAULT_BUDGET = 1.50           # dollars per run
 RUN_ERRORS = (ComfyError, RouterError, OSError, ValueError)
@@ -184,7 +193,8 @@ def ngrok_domain(args, save: bool = True) -> str | None:
     given = getattr(args, "domain", None)
     if given:
         host = normalise_host(given, "--domain")
-        if save:
+        if save and not getattr(args, "ngrok_dataset", None):     # a second account's domain is not remembered
+            # (the file holds the first account's: a later plain `up` would try it with the wrong token)
             f = domain_file()
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text(host + "\n", encoding="utf-8")
@@ -193,6 +203,8 @@ def ngrok_domain(args, save: bool = True) -> str | None:
     env = os.environ.get("NOVEL_NGROK_DOMAIN", "").strip()
     if env:
         return normalise_host(env, "$NOVEL_NGROK_DOMAIN")
+    if getattr(args, "ngrok_dataset", None):
+        return None     # another ngrok account's token: the stored domain is the first account's and would not open
     f = domain_file()
     try:
         text = f.read_text(encoding="utf-8").strip()
@@ -229,8 +241,15 @@ def _stage_dataset(trial: Path, book: str, user: str, marker: str, args,
                "max_hours": getattr(args, "max_hours", None) or 6,
                "gpu": getattr(args, "gpu", None) if getattr(args, "gpu", None) is not None else 1,
                "tunnel": getattr(args, "tunnel", None) or "ngrok"}
+    if getattr(args, "model", None) not in (None, kcomfy.FLUX):
+        session["model"] = args.model
     if getattr(args, "comfy_arg", None):
         session["comfy_args"] = list(args.comfy_arg)
+    if getattr(args, "ngrok_dataset", None):
+        slug = str(args.ngrok_dataset).strip()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug):
+            sys.exit(f"--ngrok-dataset {slug!r} is not a Kaggle dataset slug (lower-case letters, digits, hyphens)")
+        session["ngrok_dataset"] = slug         # the notebook reads the token from this dataset
     if domain:
         session["domain"] = domain
     shutil.copy2(Path(kcomfy.__file__), st / "kcomfy.py")
@@ -242,7 +261,25 @@ def _stage_dataset(trial: Path, book: str, user: str, marker: str, args,
     return st, session
 
 
-def _stage_kernel(trial: Path, book: str, user: str, tunnel: str) -> Path:
+def ensure_ngrok_dataset(profile: str, user: str, slug: str = "ngrok-token") -> None:
+    """The image server reads its ngrok token from the private dataset <user>/<slug>: upload kaggle/NGROK_AUTHTOKEN
+    there when the account (picked because it was free) does not have it yet. The domain stays the stored one."""
+    from .account import kaggle_as
+    if "NGROK_AUTHTOKEN" in kaggle_as(profile, "datasets", "files", f"{user}/{slug}"):
+        return
+    src = NOTEBOOK.parent / "NGROK_AUTHTOKEN"
+    if not src.is_file():
+        sys.exit(f"{user} has no {slug} dataset and {src} is missing: add the ngrok token there")
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copy2(src, Path(tmp) / "NGROK_AUTHTOKEN")
+        (Path(tmp) / "dataset-metadata.json").write_text(json.dumps(
+            {"title": slug, "id": f"{user}/{slug}", "licenses": [{"name": "CC0-1.0"}]}), encoding="utf-8")
+        print(f"uploading the ngrok token to {user}/{slug} (private): "
+              + kaggle_as(profile, "datasets", "create", "-p", tmp).strip()[-160:])
+
+
+def _stage_kernel(trial: Path, book: str, user: str, tunnel: str, ngrok_dataset: str = "ngrok-token") -> Path:
     kd = trial / "kaggle" / "kernel"
     kd.mkdir(parents=True, exist_ok=True)
     ks = kernel_slug(book)
@@ -253,7 +290,7 @@ def _stage_kernel(trial: Path, book: str, user: str, tunnel: str) -> Path:
     nb.write_text(nb.read_text(encoding="utf-8").replace("@DATASET@", dataset_slug(book)), encoding="utf-8")
     sources = [f"{user}/{dataset_slug(book)}", f"{user}/hf-token"]
     if tunnel == "ngrok":
-        sources.append(f"{user}/ngrok-token")        # only the ngrok tunnel reads it
+        sources.append(f"{user}/{ngrok_dataset}")    # only the ngrok tunnel reads it
     (kd / "kernel-metadata.json").write_text(json.dumps({
         "id": f"{user}/{ks}", "title": ks, "code_file": f"{ks}.ipynb", "language": "python",
         "kernel_type": "notebook", "is_private": True, "enable_gpu": True,
@@ -318,13 +355,18 @@ def cmd_up(args, trial: Path) -> int:
             return 1
         if word == "UNKNOWN":
             print(f"note: could not read the status of {old['kernel']} ({line[-100:]}); pushing anyway")
-    profile = resolve_profile(getattr(args, "account", None))
+    from novel.core import settings
+    from .account import free_profile
+    profile = getattr(args, "account", None) or free_profile(settings.get("images.kaggle_profile", default=None))
     user = owner(profile)
+    if tunnel == "ngrok" and not getattr(args, "ngrok_dataset", None) and not getattr(args, "dry_run", False) \
+            and settings.get("kaggle.pick_free", default=False):
+        ensure_ngrok_dataset(profile, user)
     marker = f"push-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}.txt"
     st, session = _stage_dataset(trial, book, user, marker, args, domain)
-    kd = _stage_kernel(trial, book, user, tunnel)
+    kd = _stage_kernel(trial, book, user, tunnel, session.get("ngrok_dataset") or "ngrok-token")
     print(f"staged server for {user} (profile {profile}), tunnel {tunnel}"
-          + (f", domain {domain}" if domain else ""))
+          + (f", domain {domain}" if domain else "") + f", model {session.get('model', kcomfy.FLUX)}")
     if dry:
         print(f"dry run - nothing is called. Would upload dataset {user}/{dataset_slug(book)} and push kernel "
               f"{user}/{kernel_slug(book)}:")
@@ -348,6 +390,8 @@ def cmd_up(args, trial: Path) -> int:
               "url": _url_for(domain) if domain else None}
     if domain:
         server["domain"] = domain
+    if session.get("model"):
+        server["model"] = session["model"]
     save_server(trial, server)
     if not domain:
         print("pushed.")
@@ -508,9 +552,10 @@ def _to_jpeg(data: bytes) -> tuple[bytes, tuple[int, int]]:
 class _Run:
     """One `run`: the client, what has been uploaded, and the running numbers."""
 
-    def __init__(self, comfy: Comfy | None, trial: Path, plan: dict):
-        self.comfy, self.trial, self.plan = comfy, trial, plan
-        self.root = trial                       # where pictures, meta files and log.jsonl go
+    def __init__(self, comfy: Comfy | None, trial: Path, plan: dict, model: str = kcomfy.FLUX):
+        self.comfy, self.trial, self.plan, self.model = comfy, trial, plan, model
+        sub = {kcomfy.MINIMAX: kcomfy.MM_DIR, kcomfy.QWEN: kcomfy.QW_DIR}.get(model)
+        self.root = trial / sub if sub else trial   # pictures, meta files, log.jsonl
         self.names: dict[str, str] = {}         # plan file -> name on the server
         self.secs: list[float] = []
         self.made = self.skipped = self.failed = 0
@@ -523,7 +568,8 @@ class _Run:
         file = ref["file"]
         if file in self.names:
             return self.names[file]
-        path = self.trial / file
+        # a place reference is the plate of THIS model's run (self.root; the trial itself for FLUX)
+        path = (self.root if ref.get("role") == "place" else self.trial) / file
         if not path.is_file():
             raise ComfyError(f"reference {file} is missing (a place picture is made by its plate first)")
         if ref.get("role") == "place" and ref.get("group"):
@@ -538,20 +584,26 @@ class _Run:
         """Generate, convert, write the picture and its meta file, log it. Raises ComfyError on failure.
         With `replace_stamp` the picture it replaces is moved to old/<stamp>/ only once the new one exists, so a
         failed re-roll leaves the old picture where it was."""
+        if self.model == kcomfy.QWEN:           # the place plate is its canvas (image_1)
+            text, refs = kcomfy.qwen_order(text, refs)
         names = [self.upload(r) for r in refs]
-        data, took = self.comfy.generate(text, seed, int(self.plan["width"]), int(self.plan["height"]), names,
-                                         f"ktrial-c{int(self.plan['chapter']):04d}-{ident}-{seed}")
+        sent = kcomfy.adapt_prompt(self.model, text)
+        kw = {"timeout": kcomfy.picture_timeout(self.model), "model": self.model} if self.model != kcomfy.FLUX else {}
+        data, took = self.comfy.generate(sent, seed, int(self.plan["width"]), int(self.plan["height"]), names,
+                                         f"ktrial-c{int(self.plan['chapter']):04d}-{ident}-{seed}", **kw)
         jpeg, (w, h) = _to_jpeg(data)
         out = self.root / item["out"]
         out.parent.mkdir(parents=True, exist_ok=True)
         if replace_stamp:
-            _archive(self.trial, [out, _meta_path(out)], out.parent, replace_stamp)
+            sidecar = [out.with_suffix(".prompt.txt")] if self.model != kcomfy.FLUX else []
+            _archive(self.trial, [out, _meta_path(out), *sidecar], out.parent, replace_stamp)
         tmp = out.with_name(out.name + ".part")
         tmp.write_bytes(jpeg)
         os.replace(tmp, out)
+        if self.model != kcomfy.FLUX:           # the prompt as sent (the FLUX one is written by `prompts`)
+            out.with_suffix(".prompt.txt").write_bytes(sent.encode("utf-8"))
         meta = {"id": ident, "seed": seed, "seconds": round(took, 2), "refs": [Path(r["file"]).name for r in refs],
-                "width": w, "height": h, "bytes": len(jpeg), "model": kcomfy.UNET_NAME, "steps": kcomfy.STEPS,
-                "at": _now()}
+                "width": w, "height": h, "bytes": len(jpeg), **kcomfy.model_info(self.model), "at": _now()}
         _write_json(_meta_path(out), meta)
         _log(self.root, dict(meta, kind=kind))
         self.secs.append(took)
@@ -664,6 +716,81 @@ def _router_client() -> korouter.OpenRouter:
     return korouter.OpenRouter(korouter.find_key(), base)
 
 
+SHEET_SEED = 202
+SHEET_LAYOUT = ("LAYOUT: the same single character drawn four times in full body, left to right: front view, "
+                "three-quarter view, side view, back view, each standing straight in a relaxed neutral pose with arms "
+                "at the sides, feet visible, all the same size and lined up on one ground line. On the far right, two "
+                "larger head-and-shoulders close-ups of the face: front view and three-quarter view. Identical face, "
+                "hair and clothes in every view.")
+SHEET_END = "No background scenery, no text, no letters, no labels, no captions, no borders."
+
+
+def sheet_prompt(bible: dict, key: str) -> str:
+    """The text of one Qwen character sheet: the book's picture style on a plain sheet, the bible look, four views."""
+    from novel import kprompts
+    c = bible["characters"][key]
+    style = kprompts._style(bible).replace("16:9 illustration.", "16:9 character reference sheet on a plain, flat, "
+                                           "light neutral gray background.", 1)
+    look = kprompts._one(c.get("look") or "").rstrip(" .")
+    return f"{style}\n\nCHARACTER: {c['display']}" + (f", {look}" if look else "") + f".\n\n{SHEET_LAYOUT}\n\n{SHEET_END}\n"
+
+
+def sheet_keys(args) -> list[str]:
+    """--keys a,b, plus with --missing the chapter's referenced people (a Flow name on their base look) that have no
+    sheet yet. The cast comes from the production scene file, else the trial's."""
+    from novel import bible as B
+    from . import episode_scenes as S
+    from . import ktrial as K
+    book, chapter, _, ep_root, trial = K._setup(args)
+    bdir = B.bible_dir(book)
+    chars = B.load_characters(bdir)["characters"]
+    keys = [k.strip() for k in (getattr(args, "keys", None) or "").split(",") if k.strip()]
+    if getattr(args, "missing", False):
+        f = S.scenes_path(ep_root, chapter)
+        f = f if f.exists() else K.scenes_file(trial, chapter)
+        doc = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {"scenes": []}
+        cast = {c["key"] for s in doc["scenes"] for c in s.get("cast", [])}
+        keys += sorted(k for k in cast if k in chars and ((chars[k].get("variants") or {}).get("base") or {}).get("flow_name")
+                       and not K.qwen_sheet(trial.parent, k) and k not in keys)
+    unknown = [k for k in keys if k not in chars]
+    if unknown:
+        sys.exit(f"not in the bible: {', '.join(unknown)}")
+    return keys
+
+
+def cmd_charsheet(args, trial: Path) -> int:
+    """Make Qwen character sheets in <book>/bible/qwen/<key>_sheet_seed202.jpg on the running server (no reference:
+    text only, from the bible look). The picture prompts attach them as each person's reference."""
+    from novel import bible as B
+    keys = sheet_keys(args)
+    if not keys:
+        print("no character sheet to make")
+        return 0
+    server = load_server(trial)
+    if not server.get("url") or server.get("model") != kcomfy.QWEN:
+        print("no Qwen server recorded for this chapter: run `novel ktrial up --model qwen-image-turbo` first")
+        return 1
+    bdir = B.bible_dir(args.book)
+    bible, out_dir = B.load_characters(bdir), bdir / "qwen"
+    run = _Run(_comfy(server), out_dir, {"width": 1376, "height": 768, "chapter": 0}, kcomfy.QWEN)
+    run.root = out_dir                          # sheets live in the bible, not in a model subfolder
+    run.total = len(keys)
+    manifest = _read_json(out_dir / "manifest.json", {}) or {}
+    for k in keys:
+        name = f"{k}_sheet_seed{SHEET_SEED}.jpg"
+        try:
+            meta = run.make("sheet", k, {"out": name}, sheet_prompt(bible, k), SHEET_SEED, [])
+        except ComfyError as e:
+            print(f"  {k}: failed: {e}")
+            run.failed += 1
+            continue
+        manifest[k] = {"file": name, "seed": SHEET_SEED, "display": bible["characters"][k]["display"]}
+        _write_json(out_dir / "manifest.json", manifest)
+        print(f"  {k}: {name} ({meta['seconds']:.0f}s)")
+    print(f"character sheets: made {run.made}, failed {run.failed} -> {out_dir}")
+    return 1 if run.failed else 0
+
+
 def cmd_run(args, trial: Path) -> int:
     trial = Path(trial)
     plan = _read_json(trial / "plan.json")
@@ -686,6 +813,7 @@ def cmd_run(args, trial: Path) -> int:
         if not server.get("url"):
             print("no server address recorded: run `novel ktrial up` (or `novel ktrial url ADDRESS` to store it by hand)")
             return 1
+        model = server.get("model") or kcomfy.FLUX
         comfy = _comfy(server)
         try:
             _comfy(server, retries=2, backoff=0.5).ping()      # a dead tunnel should not cost half a minute
@@ -693,7 +821,10 @@ def cmd_run(args, trial: Path) -> int:
             print(f"the server at {server['url']} does not answer: {e}\n"
                   f"Check it with `novel ktrial status`; if it has stopped, start a new one with `novel ktrial up`.")
             return 1
-        run = _Run(comfy, trial, plan)
+        run = _Run(comfy, trial, plan, model)
+        if model != kcomfy.FLUX:
+            info = kcomfy.model_info(model)
+            print(f"model {info['model']} + {info['text_encoder']}; pictures go to {run.root}")
     return _execute(run, args, plan)
 
 

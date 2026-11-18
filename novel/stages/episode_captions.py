@@ -15,7 +15,7 @@ Two steps, so captions never wait for the narration:
 captions/NNNNN.json, version 2:
     {"version": 2, "chapter": 1, "model": "...", "hindi_sha256": "...", "chunks": 7,
      "lines": [{"para": 0, "chunk": 0, "off": 0, "len": 21, "hi": "...", "en": "..."}, ...]}
-  para  paragraph (0 = the chapter heading, which the title card shows);
+  para  paragraph (older chapters: 0 = the spoken chapter heading, never captioned);
   chunk index of the narration chunk the sentence is in; off, len  character offset / length of
   the sentence inside that chunk's text. Files without "version" are the old one-step format
   (start and end already inside each line); they are used exactly as they are.
@@ -378,11 +378,16 @@ def write_ass(ep_root: Path, n: int, out: Path) -> int:
     size = int(cfg.get("size") or SIZE)
     max_line = int(cfg.get("max_line") or MAX_LINE)
     lines = timed_lines(ep_root, n)
-    para1 = next((r["start"] for r in lines if r["para"] == 1), 3.0)
-    title_end = min(10.0, max(4.0, LEAD + para1 + 2.5))    # the title card's band, as episode_render
+    from .heading import is_heading
+    # Older chapters open with a spoken heading (paragraph 0), never captioned; new ones start with the story.
+    has_head = any(r["para"] == 0 and is_heading(r.get("hi", "")) for r in lines)
+    para1 = next((r["start"] for r in lines if r["para"] == 1), 3.0) if has_head else 0.0
+    info = E.info(ep_root)
+    show = n == info.get("start") and not info.get("extra")  # the episode card: first chapter only
+    title_end = min(10.0, max(4.0, LEAD + para1 + 2.5)) if show else 0.0   # its band, as episode_render
     events = []
     for r in lines:
-        if r["para"] == 0:                  # the chapter heading: the title card shows it
+        if has_head and r["para"] == 0:     # the chapter heading: not captioned
             continue
         start, end = LEAD + r["start"], LEAD + r["end"]
         ps = _pieces(r["en"], max_line)

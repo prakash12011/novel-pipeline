@@ -259,3 +259,37 @@ def test_run_options_default_to_kaggle_and_accept_openrouter_settings():
             ktrial_cmd.build_parser("run").parse_args(["--chapter", "24"] + bad)
     assert "--via kaggle|openrouter" in ktrial_cmd.USAGE and "--budget D" in ktrial_cmd.USAGE
     assert not hasattr(ktrial_cmd.build_parser("report").parse_args(["--chapter", "1"]), "via")
+
+
+# ---------------------------------------------------------------- MiniMax H3 Image through OpenRouter
+
+MINIMAX = "minimax/minimax-h3-image"
+
+
+def test_minimax_uses_picture_wording(monkeypatch):
+    monkeypatch.setattr(korouter, "MODEL", MINIMAX)
+    assert korouter.hosted_text("<ref_image_0> and <ref_image_1>") == "<Picture 1> and <Picture 2>"
+    assert korouter.hosted_text("no references") == "no references"
+
+
+def test_minimax_request_has_no_seed_and_switches_prompt_enhancement_off(fo, monkeypatch):
+    monkeypatch.setattr(korouter, "MODEL", MINIMAX)
+    client(fo).generate("plain place", [], resolution="1K", seed=77)
+    body = fo.requests[0]["body"]
+    assert body["model"] == MINIMAX and body["resolution"] == "1K"
+    assert "seed" not in body
+    assert body["provider"] == {"options": {"minimax": {"disable_prompt_enhanced": True}}}
+
+
+def test_minimax_edits_do_not_send_the_enhancement_switch(fo, monkeypatch):
+    # the endpoint answers HTTP 400 to it when references are attached ("prompts are always enhanced")
+    monkeypatch.setattr(korouter, "MODEL", MINIMAX)
+    client(fo).generate("A <Picture 1> B", [ref_bytes((9, 9, 9))], resolution="1K", seed=77)
+    body = fo.requests[0]["body"]
+    assert "provider" not in body and "seed" not in body and len(body["input_references"]) == 1
+
+
+def test_other_models_are_unchanged_by_the_minimax_branch(fo):
+    client(fo).generate("x", [], seed=5)
+    body = fo.requests[0]["body"]
+    assert body["seed"] == 5 and "provider" not in body

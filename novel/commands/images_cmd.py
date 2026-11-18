@@ -156,6 +156,9 @@ def main(argv, inject=None, ask=input, interactive=None) -> int:
     ep_root = paths.ep_root(book, ep)
     eff = settings.effective(book, ep)
     img = eff.get("images") or {}
+    if str(img.get("engine") or "flow").lower() == "qwen":          # Qwen-Image on Kaggle: no Chrome, no Flow
+        from novel.stages import qwen_images
+        return qwen_images.run(book, ep, a.chapters, a.max_n, a.dry_run)
     ep_flag = f" --ep {ep}"
     setting = str(img.get("quality") or "").upper()
     size = "1K" if (a.quality or setting) == "1K" else "2K"     # anything but 1K is the normal 2K download

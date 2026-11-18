@@ -73,13 +73,15 @@ Keys marked "Not read" or "Not used" are in the file for later; changing them do
 
 | Key | Default | What it does | Layers |
 | --- | --- | --- | --- |
+| `images.engine` | `qwen` | What draws the pictures. `qwen`: Qwen-Image-2.1-Turbo in ComfyUI on a Kaggle GPU (`novel images` starts the server on a free account, writes `images/cNNNN/sNN-2k.jpg` and makes missing character sheets in `bible/qwen/`); `novel write` then adds the Qwen picture-line rules to its IMAGES request. `flow`: Google Flow in Chrome (the older way). | default, PC, book, episode |
+| `images.kaggle_profile` | `null` | The Kaggle account the image server prefers. With `kaggle.pick_free` it is tried first and another free account is taken when it is busy; without it the narration's account (`tts.kaggle_profile`, then `kaggle.account`) is used. | default, PC, book, episode |
 | `images.flow_project` | `null` | Address of the Google Flow project the pictures are made in. Required by `novel approve`; `novel chrome` opens it. | default, PC, book, episode |
 | `images.flow_model` | `"Nano Banana Pro"` | The Flow image model; `novel chrome` reminds you to choose it in the prompt bar, and it is passed to the Flow scripts. | default, PC, book, episode |
 | `images.allow_agent` | `false` | `true` lets the Flow scripts work with Flow's Agent mode on. Leave `false` (plain prompt bar). | default, PC, book, episode |
 | `images.paced_seconds` | `7.0` | Aim: one new picture about every this many seconds of narration. **Only changes the wording of the Gemini prompt today**; the cutting code uses a fixed 7.0. | default, PC, book, episode, **chapter** |
 | `images.max_seconds` | `7.5` | Longest a picture may stay on screen. **Only changes the wording of the Gemini prompt today**; the cutting code and the renderer use a fixed 7.5. | default, PC, book, episode, **chapter** |
 | `images.chars_per_second` | `15.3` | Speaking speed (letters per second) used to estimate how long a text is spoken. **Only changes the wording of the Gemini prompt today**; the cutting code uses a fixed 15.3. | default, PC, book, episode |
-| `images.max_characters` | `4` | Most named people (with a Flow reference) allowed in one picture. Used when importing and in QA. | default, PC, book, episode |
+| `images.max_characters` | `2` | Most named people (with a reference) allowed in one picture (Qwen keeps two faces apart reliably; Flow took 4). Used when importing and in QA. | default, PC, book, episode |
 | `images.chapters_per_day` | `3` | How many chapters `novel images` takes per run when you do not give `--chapters`. | default, PC, book, episode |
 | `images.max_per_run` | `200` | Most pictures one `novel images` run sends (`--max` overrides). | default, PC, book, episode |
 | `images.batch` | `5` | Prompts sent to Flow side by side, then downloaded together (`--batch` overrides). 1 = one at a time. | default, PC, book, episode |
@@ -91,7 +93,7 @@ Keys marked "Not read" or "Not used" are in the file for later; changing them do
 | `images.wall_cooldown_hours` | `12` | After a Flow stop (limit, CAPTCHA, sign-in) `novel images` refuses to run for this many hours unless you add `--i-checked-flow`. | default, PC, book, episode |
 | `images.quality` | `1K` | Size Flow downloads each picture in: `1K` (1376x768, the default) or `2K` (2752x1536). The HD step upscales a 1K picture after the Gemini mark is removed, so the video looks the same. `1K` pictures can be upgraded later with `novel images --upgrade`. `2K` can be forced for one run with `novel images --quality 2K`, or for a book or episode in its settings. | default, PC, book, episode |
 | `images.alert_repeat_seconds` | `30` | When a run pauses for you (CAPTCHA, sign-in, limit) the tool beeps, then beeps again every this many seconds until you press a key. 0 = beep once. | default, PC, book, episode |
-| `images.watermark` | `crop` | What to do about the Gemini star Flow stamps in the bottom-right corner of every download. `crop` cuts it off (about a tenth of the picture is lost; today's way). `remove` takes it out with the npm package in `flow/` (`novel clean`), checks the result and crops only the pictures where removal failed (mostly 1376x768 downloads: see "Removing the Gemini mark" in COMMANDS.md). `none` leaves the mark in. Changing it makes chapter videos out of date. | default, PC, book, episode |
+| `images.watermark` | `none` | Qwen pictures have no mark, so they are used as they are (the HD step only upscales). For Flow downloads: what to do about the Gemini star Flow stamps in the bottom-right corner of every download. `crop` cuts it off (about a tenth of the picture is lost; today's way). `remove` takes it out with the npm package in `flow/` (`novel clean`), checks the result and crops only the pictures where removal failed (mostly 1376x768 downloads: see "Removing the Gemini mark" in COMMANDS.md). `none` leaves the mark in. Changing it makes chapter videos out of date. | default, PC, book, episode |
 
 ### Video
 
@@ -180,5 +182,6 @@ These are read by the tool but have no built-in default. Set them where shown.
   - `chrome.exe`, `chrome.profile`, `chrome.cdp_url`: Chrome's program, the signed-in profile folder, and the DevTools address (normally `http://127.0.0.1:9222`).
   - `chainner.exe`, `chainner.model`: chaiNNer and its upscaling model (optional, for the HD step).
   - `kaggle.account` and `kaggle.profiles.<name>.username`: the default Kaggle profile and each profile's Kaggle user name.
+  - `kaggle.pick_free` (PC settings): `true` makes the image server (`novel images`, `novel ktrial up`) and the narration (`novel tts push`) each take the first account in `kaggle.profiles` with no notebook running (the preferred one, `images.kaggle_profile` or `tts.kaggle_profile`, first), so two jobs never share an account's GPU. An account picked for the image server gets the ngrok token uploaded to its private `ngrok-token` dataset when it lacks it. `--account NAME` always wins.
 - In **`book.yaml`**:
   - `book.chapter_regex`: how `novel extract` recognises a chapter heading, with a group named `num` and optionally `title`. Default: `Chapter 12`, `Chapter 12: Title`, `Chapter 12 - Title`.

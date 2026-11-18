@@ -53,6 +53,12 @@ def hut_loc(first, last):
 
 # ---------------------------------------------------------------- the fake Gemini server
 
+def recap_of(system):
+    """A valid recap for the band the rules name: the middle of the band, one paragraph."""
+    low, high = (int(x) for x in re.search(r"(\d+) to (\d+) words in all", system).groups())
+    return " ".join(["मैरेन"] * ((low + high) // 2))
+
+
 def ok(text, finish="STOP"):
     return ("text", text, finish)
 
@@ -85,6 +91,8 @@ class Fake:
             r.kind = "hindi"
             r.n = int(re.search(r"CHAPTER (\d+) \(English\)", user).group(1))
             r.cont = "YOUR ANSWER SO FAR" in user
+        elif "THE RECAP" in system:
+            r.kind = "recap"
         elif "Return the BIBLE block" in user:
             r.kind = "bible"
             r.batch = re.search(r"BEGIN BIBLE (B\d+-\d+) ->", user).group(1)
@@ -104,6 +112,8 @@ class Fake:
             if r.cont:
                 return ok("\n\n".join(HI3[3:]))
             return ok("\n\n".join(HI3))
+        if r.kind == "recap":
+            return ok(recap_of(r.system))
         if r.kind == "bible":
             a, z = (int(x) for x in re.fullmatch(r"B(\d+)-(\d+)", r.batch).groups())
             return ok("Here is the bible.\n\n" + block("BIBLE", r.batch, [
@@ -1150,3 +1160,58 @@ def test_a_book_word_target_of_600_changes_the_band_in_the_rules(tmp_path, monke
     assert code == 0, out
     system = next(r.system for r in fake.requests if r.kind == "hindi")
     assert "about 600 Hindi words (between 480 and 720 words)" in " ".join(system.split())
+
+
+def test_a_run_that_translates_makes_a_recap_of_the_episode_and_a_rerun_makes_no_call(book3, capsys, fake):
+    code, out = write(capsys)
+    assert code == 0, out
+    rq = next(r for r in fake.requests if r.kind == "recap")
+    got = len((ep(book3) / "recap.txt").read_text(encoding="utf-8").split())
+    assert fake.count("recap") == 1 and 60 <= got <= 90
+    assert "THE RECAP" in rq.system and "BIBLE" not in rq.system and "THE EPISODE" in rq.user
+    assert "novel intro init --ep 2 --text-file" in out
+    n = fake.count()
+    write(capsys)
+    assert fake.count() == n
+
+
+def test_a_bad_recap_is_asked_again_and_recap_makes_only_the_recap(book3, capsys, fake):
+    fake.on(lambda r: r.kind == "recap", ok("बहुत छोटा"))
+    code, out = write(capsys)
+    assert code == 0, out
+    assert fake.count("recap") == 2 and "recap: rejected" in out
+    before = fake.count()
+    code, out = write(capsys, "--recap")
+    assert code == 0, out
+    assert fake.count() == before + 1 and fake.count("recap") == 3
+
+
+def test_every_gemini_key_limited_asks_openrouter_for_the_same_model(book, fake, monkeypatch, tmp_path):
+    from novel import korouter
+    from novel.stages import episode_translate as T
+    fake.limited_keys = {KEY1, KEY2}
+    seen = {}
+
+    class Chat:
+        def __init__(self, key, model):
+            seen.update(key=key, model=model)
+
+        def generate(self, system, text, **kw):
+            return T.GenResult("from openrouter", "STOP", "google/gemini-test", 0,
+                               {"promptTokenCount": 3, "candidatesTokenCount": 2})
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+    monkeypatch.setattr(korouter, "Chat", Chat)
+    g = T.Gemini("gemini-test", tmp_path / "c.jsonl", sleep=lambda s: None, say=lambda t: None)
+    r = g.generate("system", "hello")
+    assert r.text == "from openrouter" and seen == {"key": "or-test-key", "model": "google/gemini-test"}
+    assert len(fake.requests) == 2 and g.usage["output"] == 2           # each Gemini key once, then OpenRouter
+
+
+def test_without_an_openrouter_key_a_limited_run_still_waits(book, fake, monkeypatch, tmp_path):
+    from novel.stages import episode_translate as T
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    fake.limited_keys = {KEY1, KEY2}
+    g = T.Gemini("gemini-test", tmp_path / "c.jsonl", sleep=lambda s: None, say=lambda t: None)
+    with pytest.raises(T.QuotaExhausted):
+        g.generate("system", "hello")

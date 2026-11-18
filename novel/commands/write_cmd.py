@@ -1,5 +1,5 @@
 """novel write [--book B] [--ep N] [--chapters A-B] [--max-chapters N] [--model M] [--parallel N] [--dry-run]
-              [--no-translate] [--redo N] [--fix N] [--translate N[,M...]] [--restore N]
+              [--no-translate] [--recap] [--redo N] [--fix N] [--translate N[,M...]] [--restore N]
 
 The Hindi, the bible and the picture lines written by the Gemini API (your keys) and filed by the same importer
 as `novel import`. See novel/gemini/write.py.
@@ -32,6 +32,8 @@ def main(argv) -> int:
                     help="show what it would do and the size of each request; send and write nothing")
     ap.add_argument("--no-translate", action="store_true",
                     help="refuse a chapter that has no Hindi instead of translating it")
+    ap.add_argument("--recap", action="store_true",
+                    help="only (re)write recap.txt, the very short recap of the whole episode for the next intro")
     ap.add_argument("--redo", metavar="N", help="write the scenes of chapter N again (the old files move to old/vN/)")
     ap.add_argument("--fix", type=int, metavar="N",
                     help="send the QA fix message of chapter N to the API and file the PATCH it returns")
@@ -40,6 +42,8 @@ def main(argv) -> int:
                          "its old Hindi, audio, timing, captions, scenes, images and QA in old/vK/ (nothing is deleted) "
                          "and is translated again; new narration is then needed: novel tts push --chapters N. "
                          "Undo with --restore N. (--retranslate is the same option.)")
+    ap.add_argument("--no-scenes", action="store_true",
+                    help="with --translate: translate (and recap) only; do not write the picture lines")
     ap.add_argument("--restore", type=int, metavar="N",
                     help="bring back the most recent old/vK/ of chapter N that has a RESTORE.json; the current "
                          "version is itself set aside first, so restoring is reversible. Makes no API call.")
@@ -66,6 +70,8 @@ def main(argv) -> int:
             print("novel write: no current episode. Pass --ep N or run: novel use <book> --ep N", file=sys.stderr)
             return 2
         runner = W.Runner(book, ep, a)
+        if a.recap:
+            return runner.recap_only()
         if a.fix is not None:
             return runner.run_fix(a.fix)
         if a.translate is not None:

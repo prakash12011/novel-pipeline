@@ -244,7 +244,9 @@ def cmd_push(args) -> int:
     if not chapters:
         print("nothing to narrate: no chapter is locked and still without audio")
         return 0
-    profile = resolve_profile(args.account)
+    from novel.core import settings
+    from .account import free_profile
+    profile = args.account or free_profile(settings.get("tts.kaggle_profile", default=None))
     user = owner(profile)
     marker = f"push-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}.txt"
     st = stage(args.episode, chapters, user, marker)

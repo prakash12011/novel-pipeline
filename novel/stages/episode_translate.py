@@ -66,7 +66,7 @@ Examples: टाइम, रूम, आइडिया, प्लान, प्�
 Keep a Hindi word only when that is what people really say in conversation: घर, पानी, दरवाज़ा, अचानक.
 Not this: अचानक उसे एक विचार आया और उसने समय देखा।
 This: अचानक उसे एक आइडिया आया और उसने टाइम देखा।
-It must feel like normal conversation, not a literary book. Spell every English word in Devanagari, because the narrator reads Devanagari."""
+It must feel like normal conversation, not a literary book: common daily-life Hindi, never formal or pure (shuddh) Hindi. Everyday Hindi words stay as people say them (पानी not जल, घर not निवास, दोस्त not मित्र). Spell every English word in Devanagari, because the narrator reads Devanagari."""
 
 SYSTEM = """You retell a fantasy web novel in Hinglish for an audiobook narrator. Friends and family will listen, so it must be gripping and easy to follow.
 {hinglish}
@@ -256,6 +256,33 @@ class Gemini:
             {"x-goog-api-key": self.keys[self.k], "Content-Type": "application/json"})
         return json.load(urllib.request.urlopen(req, timeout=300))
 
+    def _router(self, system: str, text: str, temperature: float, max_output_tokens: int | None,
+                why: str) -> GenResult | None:
+        """The OpenRouter fallback, the same model as google/<model>, when Gemini itself cannot answer (every key
+        rate-limited, or the connection keeps dropping). Only with OPENROUTER_API_KEY in the environment or in this
+        project's secrets.env, never another project's file. None without a key, or when OpenRouter fails too."""
+        from novel import korouter
+        from novel.core import secrets
+        key = os.environ.get(korouter.KEY_VAR, "").strip() or secrets.load().get(korouter.KEY_VAR, "")
+        if not key:
+            return None
+        name = f"google/{self.model}"
+        self.say(f"    {why}; asking OpenRouter ({name})")
+        try:
+            r = korouter.Chat(key, name).generate(system, text, temperature=temperature,
+                                                   max_output_tokens=max_output_tokens or 32000)
+        except korouter.RouterError as e:
+            self.note(event="openrouter_error", model=name, error=str(e)[:200])
+            self.say(f"    OpenRouter failed too: {str(e)[:160]}")
+            return None
+        u = r.usage or {}
+        self.note(event="openrouter", model=name, cost=u.get("cost"))
+        with self._lock:
+            self.calls += 1
+            self.usage["prompt"] += int(u.get("promptTokenCount") or 0)
+            self.usage["output"] += int(u.get("candidatesTokenCount") or 0)
+        return r
+
     def _pace(self) -> None:
         """Keep `min_gap` seconds between the start of two requests (the slot is reserved under a lock, so
         requests from several threads queue up)."""
@@ -279,7 +306,7 @@ class Gemini:
             body["generationConfig"]["maxOutputTokens"] = max_output_tokens
         models = [self.model] + self.fallback_models
         mi = self._sticky[0] if self.clock() < self._sticky[1] and self._sticky[0] < len(models) else 0
-        limited, waits, hits = 0, 0, 0
+        limited, waits, hits, drops = 0, 0, 0, 0
         for attempt in range(1, 60):
             self._pace()
             model, key = models[mi], self.k
@@ -309,6 +336,10 @@ class Gemini:
                             self._sticky = (mi, self.clock() + self.key_wait_s)
                             self.say(f"    every key is limited on {model}; trying the fallback model {models[mi]}")
                             continue
+                        r = self._router(system, text, temperature, max_output_tokens,
+                                         "every Gemini key is rate-limited")
+                        if r is not None:
+                            return r
                         waits += 1
                         if waits >= KEY_WAIT_ROUNDS:
                             raise QuotaExhausted("every key is still rate-limited after "
@@ -319,6 +350,12 @@ class Gemini:
                                  f"(wait {waits} of {KEY_WAIT_ROUNDS - 1})")
                         self.sleep(self.key_wait_s)
                 else:
+                    drops += 1
+                    if drops % 3 == 0:
+                        r = self._router(system, text, temperature, max_output_tokens,
+                                         f"the Gemini request failed {drops} times ({str(e)[:60]})")
+                        if r is not None:
+                            return r
                     self.sleep(min(60, 5 * attempt))
                 continue
             if not r.get("candidates"):
@@ -537,7 +574,8 @@ def cmd_run(args) -> None:
             continue
         name = f"{ch.idx:05d}"
         tmp = ep_root / "hindi" / f"{name}.tmp"   # a crash must not leave a half file
-        tmp.write_text(out["hindi"], encoding="utf-8")
+        from .heading import strip_heading
+        tmp.write_text(strip_heading(out["hindi"]), encoding="utf-8")   # no chapter heading line is stored
         tmp.replace(ep_root / "hindi" / f"{name}.txt")
         (ep_root / "qa" / f"{name}.json").write_text(
             json.dumps(out["qa"], ensure_ascii=False, indent=1), encoding="utf-8")
@@ -612,7 +650,8 @@ def cmd_draft(args) -> None:
                         shutil.copy2(src, old / rel)
                     print(f"  note: {rel} is open in another program - copied to old/, not moved")
         lock.pop(f"{name}.txt", None)
-        hindi = "\n\n".join(paras) + "\n"
+        from .heading import body_start
+        hindi = "\n\n".join(paras[body_start(paras):]) + "\n"   # the heading only splits the draft; not stored
         (ep_root / "hindi" / f"{name}.txt").write_text(hindi, encoding="utf-8")
         english = " ".join(clean_paragraphs((ep_root / "chapters" / ch.source).read_text(encoding="utf-8")))
         (ep_root / "qa" / f"{name}.json").write_text(json.dumps({

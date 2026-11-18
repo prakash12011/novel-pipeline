@@ -38,6 +38,7 @@ References are named only through REF_LABEL: FLUX.3 klein in ComfyUI addresses t
 
 from __future__ import annotations
 
+import re
 import zlib
 
 from novel.gemini.contract import no_others
@@ -53,8 +54,8 @@ REF_LABEL = "<ref_image_{n}>"
 KSHOT_TEXT = {
     "wide": "wide view of the place, people small and full length",
     "establishing": "establishing view of the whole place, no person in focus",
-    "medium": "medium shot from the chest up, the person large in the frame, hands out of the frame unless they hold "
-              "something",
+    "medium": "medium shot from the waist up, the person in front, with the place and the people around them visible "
+              "behind",
     "over-the-shoulder": "over-the-shoulder shot, both people from the chest up, one seen from behind",
     "low-angle": "low camera looking up, from the knees up",
     "high-angle": "high camera looking down, from the knees up",
@@ -69,8 +70,25 @@ DETAIL_WITH_PERSON = ("medium close shot from the chest up: the person holds the
 HEAD = "16:9 illustration."
 KEEP_PLACE = "Keep the place of {ref}: the same walls, ground, furniture and light."
 NO_WRITING = " Any page, book, letter or sign is blank, with no writing."
-CLOSING = ("Exactly one of each named person. No text, speech bubbles, captions or borders."
-           " Hands are drawn simply and correctly, five fingers each." + NO_WRITING)
+# White specks in the irises (c0001 s28, 2026-11-18); the negative prompt is unused at cfg 1, so it is said here.
+EYES = " Eyes are drawn cleanly: solid coloured irises and dark pupils, at most one tiny highlight, no white marks, spots or glare on the eyes."
+CLOSING = ("Exactly one of each named person, in a single scene: not a reference sheet, no multiple views."
+           " No text, speech bubbles, captions or borders."
+           " Hands are drawn simply and correctly, five fingers each." + EYES + NO_WRITING)
+# A person who has a reference picture: the picture, not the words, decides face and clothes. A text "wearing a linen
+# shirt" beat a portrait with a black shirt (2026-11-16, chapter 24), so the clothes clause is dropped from the look.
+# The face is "the same person", not "the same picture": "exactly as in" copied the portrait's neutral face (c0001).
+LOCK = ("Draw {name} once, taking only who they are from {ref}: face shape, hair, skin tone, clothes and drawing "
+        "style. The pose and the facial expression come from this scene, not from the reference.")
+# The sheets have a neutral face and it won over "expression: ..." at the end of the line: four or five pictures in a row
+# looked alike (c0001, 2026-11-18). The face gets its own sentence right after the lock.
+FACE = "{name}'s face in this picture: {mood}; subtle but clearly visible{ref}."
+FACE_REF = ", not the neutral face of the reference"
+CLOTHES = re.compile(r",?\s+wearing\b.*$", re.S)     # shortcut: finds only a look written with "wearing", upgrade when a look names clothes otherwise
+# An extra person without a look of their own got the only face the model had: a second Lumian pushing the trolley
+# (c0001 s12), a second Ryan at the bar (s01). The negative prompt is unused at cfg 1, so it is said here.
+ONCE = ("{who} {verb} only once. Every other person in the picture is a different person, with a clearly different "
+        "face, hair and clothes from {who}.")
 CLOSING_EMPTY = "Nobody in the picture. No text, speech bubbles, captions or borders." + NO_WRITING
 PLATE_CLOSING = "Wide view of the whole place, empty: nobody in the picture. No text, captions or borders."
 
@@ -117,16 +135,20 @@ def _person_line(m: dict, number: int | None) -> str:
     c = m["cast"]
     head = m["display"] if number is None else f"{m['display']} ({_ref(number)})"
     look = _one(m["look"])
+    if number is not None:
+        look = CLOTHES.sub("", look)
     pieces = [_clip(c.get("position")), _clip(c.get("pose"))]
     pieces = [p for p in pieces if p]
     hands = _clip(c.get("hands"))
     if hands and not hands.lower().startswith("empty"):   # empty hands are left out: naming them pulls them into view
         pieces.append(f"hands: {hands}")
-    if _clip(c.get("mood")):
-        pieces.append(f"mood: {_clip(c.get('mood'))}")
     line = f"- {head}:"
     if look:
         line += f" {_sentence(look)}"
+    if number is not None:
+        line += " " + LOCK.format(name=m["display"], ref=_ref(number))
+    if _clip(c.get("mood")):
+        line += " " + FACE.format(name=m["display"], mood=_clip(c.get("mood")), ref=FACE_REF if number is not None else "")
     if pieces:
         line += " " + "; ".join(pieces) + "."
     if _clip(c.get("wearing")):
@@ -181,7 +203,7 @@ def klein_prompt(scene: dict, doc: dict, chapter: int, bible: dict, locations: d
     lines = [_person_line(m, number.get((m["key"], m["var"])) if m["flow_name"] else None) for m in members]
     others = _clip(scene.get("others"))
     if others and not no_others(scene.get("others")):
-        lines.append(f"Background: {others}, small and blurred.")
+        lines.append(f"Also in the picture: {others}.")
     if lines:
         parts.append("\n".join(lines))
 
@@ -192,6 +214,9 @@ def klein_prompt(scene: dict, doc: dict, chapter: int, bible: dict, locations: d
         shot_text = DETAIL_WITH_PERSON
     parts.append(f"SHOT: {shot_text}.")
     parts.append(f"SCENE: {_one(scene.get('action') or scene.get('scene'))}")
+    named = [r["display"] for r in refs if r["role"] == "character"]
+    if named:
+        parts.append(ONCE.format(who=" and ".join(named), verb="appears" if len(named) == 1 else "each appear"))
     parts.append(CLOSING if members else CLOSING_EMPTY)
     return {"text": "\n\n".join(parts) + "\n", "refs": refs, "seed": seed_for(chapter, f"s{sid:02d}")}
 
@@ -215,17 +240,29 @@ def plate_prompt(gid: str, doc: dict, chapter: int, bible: dict, locations: dict
     return {"text": text, "seed": seed_for(chapter, gid)}
 
 
-def plan(doc: dict, chapter: int, bible: dict, locations: dict) -> dict:
+def plan(doc: dict, chapter: int, bible: dict, locations: dict, *, plates: bool = True) -> dict:
     """Everything one chapter needs, in drawing order (pure; file names are decided elsewhere):
 
     {"plates": [{"group", "text", "seed"}, ...]   one per group, in the order the scenes first use them
-     "shots": [{"id": "c0024-s01", "n": scene id, "group", "text", "refs", "seed"}, ...]}   in scene order"""
+     "shots": [{"id": "c0024-s01", "n": scene id, "group", "text", "refs", "seed"}, ...]}   in scene order
+
+    plates=False: no place pictures; each shot describes its place in words and the model composes it fresh."""
+    if not plates:
+        return {"plates": [], "shots": [
+            {"id": f"c{chapter:04d}-s{s['id']:02d}", "n": s["id"], "group": s.get("group"),
+             **klein_prompt(s, doc, chapter, bible, locations, plate=False)} for s in doc.get("scenes", [])]}
     plates, shots, seen = [], [], set()
+    # Groups of one place at one time of day share the first group's plate: five "bedroom" groups made five different
+    # rooms (chapter 24). A shot's own "group" stays; only its place reference points at the shared plate.
+    first: dict[tuple, str] = {}
+    share = {gid: first.setdefault((g.get("loc"), g.get("time")), gid) for gid, g in (doc.get("groups") or {}).items()}
     for s in doc.get("scenes", []):
         gid = s.get("group")
-        if gid not in seen:
-            seen.add(gid)
-            plates.append({"group": gid, **plate_prompt(gid, doc, chapter, bible, locations)})
+        pid = share.get(gid, gid)
+        if pid not in seen:
+            seen.add(pid)
+            plates.append({"group": pid, **plate_prompt(pid, doc, chapter, bible, locations)})
         k = klein_prompt(s, doc, chapter, bible, locations)
+        k["refs"] = [{**r, "group": pid} if r["role"] == "place" else r for r in k["refs"]]
         shots.append({"id": f"c{chapter:04d}-s{s['id']:02d}", "n": s["id"], "group": gid, **k})
     return {"plates": plates, "shots": shots}

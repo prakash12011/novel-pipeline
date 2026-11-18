@@ -1,0 +1,97 @@
+{
+  "1": {
+    "class_type": "KTrialUnetLoaderGGUF",
+    "inputs": {
+      "unet_name": "MiniMax-H3-Image-AD-Q4_K.gguf",
+      "device": "last_gpu"
+    }
+  },
+  "2": {
+    "class_type": "KTrialCLIPLoaderGGUF",
+    "inputs": {
+      "clip_name": "Qwen3vl_32b_h3-Q3_K_M.gguf",
+      "type": "minimax"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "minimax_h3_image_vae_fp16.safetensors"
+    }
+  },
+  "4": {
+    "class_type": "MiniMaxH3ImageConditioning",
+    "inputs": {
+      "clip": [
+        "2",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ],
+      "prompt": "a lighthouse on a cliff at dusk, comic panel",
+      "width": 1024,
+      "height": 1024
+    }
+  },
+  "5": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": [
+        "4",
+        0
+      ]
+    }
+  },
+  "7": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 1,
+      "steps": 6,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0,
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "4",
+        0
+      ],
+      "negative": [
+        "5",
+        0
+      ],
+      "latent_image": [
+        "4",
+        1
+      ]
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "7",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "wf/mm",
+      "images": [
+        "8",
+        0
+      ]
+    }
+  }
+}

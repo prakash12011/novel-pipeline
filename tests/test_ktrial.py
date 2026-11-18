@@ -122,7 +122,7 @@ def test_scenes_writes_the_trial_file_in_the_shape_of_the_importer(book, capsys)
     assert doc["groups"] == prod["groups"] and doc["scenes"] == prod["scenes"]
     assert len(doc["scenes"]) == counts(book)[1]
     src = doc["source"]
-    assert src["via"] == "ktrial" and src["framing"] == "tight" and src["model"] == "fake-model"
+    assert src["via"] == "ktrial" and src["framing"] == "wide" and src["model"] == "fake-model"
     assert src["written"].endswith("+00:00") and set(src) == {"via", "framing", "model", "written"}
     assert snapshot(book) == before
     # the summary
@@ -130,14 +130,13 @@ def test_scenes_writes_the_trial_file_in_the_shape_of_the_importer(book, capsys)
     assert "shots: " in out and "people per picture: 1: " in out and "warnings: " in out
 
 
-def test_the_tight_rules_and_two_people_are_really_sent(book):
+def test_the_wide_rules_the_qwen_note_and_two_people_are_really_sent(book):
     client = FakeClient(valid_reply(book))
     assert ktrial.cmd_scenes(args(max_characters=2), client=client) == 0
     (call,) = client.calls
-    assert "The camera is CLOSE in this series" in call.system            # a phrase only the tight rules have
+    assert "The camera is CLOSE in this series" not in call.system        # a phrase only the tight rules have
     assert "(at most 2)" in call.system
-    wide = P.build_rules("images", **ktrial.rules_args("tide", 1, 1, 2), chapter=1, window_count=3)
-    assert "The camera is CLOSE in this series" not in wide
+    assert ktrial.QWEN_NOTE.strip() in call.user and ktrial.KLEIN_NOTE.strip() not in call.user
     # the user text has the production layout: bible, English chapter, the windows, REQUEST
     n = counts(book)[1]
     assert f"##### CHAPTER 1: {n} WINDOWS #####" in call.user and "CHAPTER 1 (English)" in call.user
@@ -325,12 +324,8 @@ def test_prompts_write_the_plan_the_prompts_and_square_references(book, capsys):
     assert plan["windows"] == {str(k): w for k, w in enumerate(wins, 1)} and len(plan["windows"]) == n
 
     chars, locs = B.load_characters(book / "bible"), B.load_locations(book / "bible")
-    want = K.plan(doc, 1, chars, locs)
-    assert [p["group"] for p in plan["plates"]] == [p["group"] for p in want["plates"]]
-    p0 = plan["plates"][0]
-    assert p0 == {"group": "g01", "loc": "harbour_quay", "name": "Harbour Quay", "time": "dawn",
-                  "light": "pale light from the left", "prompt": "plates/g01.prompt.txt", "out": "plates/g01.jpg",
-                  "seed": K.seed_for(1, "g01")}
+    want = K.plan(doc, 1, chars, locs, plates=False)
+    assert plan["plates"] == [] and not (t / "plates").exists()       # Qwen composes each place fresh
     assert len(plan["shots"]) == n
     for sh, w, scene in zip(plan["shots"], want["shots"], doc["scenes"]):
         tag = f"s{scene['id']:02d}"
@@ -338,15 +333,11 @@ def test_prompts_write_the_plan_the_prompts_and_square_references(book, capsys):
         assert sh["shot"] == scene["shot"] and sh["seed"] == K.seed_for(1, tag) == w["seed"]
         assert sh["prompt"] == f"images/{tag}.prompt.txt" and sh["out"] == f"images/{tag}.jpg"
         assert (t / sh["prompt"]).read_bytes() == w["text"].encode("utf-8")
-        assert sh["refs"][-1] == {"role": "place", "group": sh["group"], "file": f"plates/{sh['group']}.jpg"}
-        assert all(r["role"] == "character" for r in sh["refs"][:-1]) and 1 <= len(sh["refs"]) <= kcomfy.MAX_REFS
-        for r in sh["refs"][:-1]:
+        assert all(r["role"] == "character" for r in sh["refs"]) and len(sh["refs"]) <= kcomfy.MAX_REFS
+        for r in sh["refs"]:
             assert set(r) == {"role", "key", "var", "display", "file"} and r["var"] == "base"
             assert r["file"] == f"refs/{r['key']}.jpg"
-        assert [r["key"] for r in sh["refs"][:-1]] == [c["key"] for c in scene["cast"]]
-    for p in plan["plates"]:
-        assert (t / p["prompt"]).read_bytes() == next(x for x in want["plates"] if x["group"] == p["group"])[
-            "text"].encode("utf-8")
+        assert [r["key"] for r in sh["refs"]] == [c["key"] for c in scene["cast"]]
     # one reference per person, a square JPEG: the central square of the 1376x768 portrait (no mark, person kept)
     assert sorted(p.name for p in (t / "refs").iterdir()) == ["maren_vale.jpg", "tobias_reed.jpg"]
     for f in (t / "refs").iterdir():
@@ -356,7 +347,7 @@ def test_prompts_write_the_plan_the_prompts_and_square_references(book, capsys):
             assert im.getpixel((760, 760))[0] < 200                                           # the white mark is gone
     assert not (book / "bible" / "flow" / "maren_vale.jpg").exists()
     # printed numbers
-    assert f"{n} shots, 2 plates" in out and "shots by number of references:" in out
+    assert f"{n} shots, 0 plates" in out and "shots by number of references:" in out
     assert "prompt length (characters): min " in out and "mean " in out and "max " in out
     longest = out.split("longest prompts: ")[1].splitlines()[0]
     assert longest.count("c0001-s") == 3
@@ -395,7 +386,8 @@ def test_a_missing_portrait_is_an_error_that_lists_every_missing_file(book, caps
     assert not (trial_of(book) / "images").exists()
 
 
-def test_more_than_three_references_is_an_error_naming_the_shot(book, capsys):
+def test_too_many_references_is_an_error_naming_the_shot(book, capsys, monkeypatch):
+    monkeypatch.setattr(kcomfy, "MAX_REFS", 2)
     with_scenes(book)
     chars = json.loads((book / "bible" / "characters.json").read_text(encoding="utf-8"))
     chars["characters"]["old_harl"]["variants"]["base"]["flow_name"] = "Old Harl"
@@ -557,5 +549,19 @@ def test_a_whole_trial_leaves_production_alone(book):
     assert snapshot(book) == before
     names = {p.relative_to(trial_of(book)).as_posix() for p in trial_of(book).rglob("*") if p.is_file()}
     assert {"scenes/00001.json", "plan.json", "gemini/001.request.txt", "gemini/001.reply.txt", "refs/maren_vale.jpg",
-            "plates/g01.prompt.txt", "images/s01.prompt.txt"} <= names
+            "images/s01.prompt.txt"} <= names
     assert not any(n.endswith(".tmp") for n in names)
+
+
+def test_a_qwen_character_sheet_is_sent_whole_instead_of_the_portrait_crop(book, capsys):
+    with_scenes(book)
+    sheet = book / "_work" / "ktrial" / "c0024" / "qwen-image-turbo" / "charsheet" / "maren_vale_sheet_seed202.jpg"
+    sheet.parent.mkdir(parents=True)
+    Image.new("RGB", (1376, 768), (0, 0, 255)).save(sheet, "JPEG")
+    capsys.readouterr()
+    assert ktrial.cmd_prompts(args()) == 0
+    assert "1 character sheet(s)" in capsys.readouterr().out
+    t = trial_of(book)
+    assert (t / "refs" / "maren_vale.jpg").read_bytes() == sheet.read_bytes()       # whole, not cropped
+    with Image.open(t / "refs" / "tobias_reed.jpg") as im:
+        assert im.size == (768, 768)                                                 # no sheet: the portrait crop

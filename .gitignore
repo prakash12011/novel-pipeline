@@ -13,3 +13,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 data/
+
+# Tailscale auth key for the Kaggle LLM experiment (secret)
+kaggle/TAILSCALE_AUTHKEY

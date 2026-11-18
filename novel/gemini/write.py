@@ -254,23 +254,23 @@ class Hindi:
     name_errors: list = field(default_factory=list)     # block saving, except on the last attempt
     warnings: list = field(default_factory=list)
     ratio: float = 0.0                                  # Hindi characters over English characters (information)
-    words: int = 0                                      # words of the narration, heading line not counted
+    words: int = 0                                      # words of the narration
     length_problem: str = ""                            # outside the word band: asked again (see closest_attempt)
 
 
 def validate_hindi(paras: list[str], english: str, names: dict, band: tuple[int, int]) -> Hindi:
     """The checks of the existing translate/draft path and of `novel qa`: paragraph_problem on every paragraph, the
-    chapter heading, the names of the NAMES list, and the word count of the narration against the band (low, high)."""
+    names of the NAMES list, and the word count of the narration against the band (low, high). The narration has no
+    chapter heading line; one that comes back anyway is dropped here (heading.strip_heading), never stored."""
     from novel import qa as Q
     from novel.stages import episode_translate as T
+    from novel.stages.heading import body_start
     paras = [T.apply_variants(p) for p in paras]
+    paras = paras[body_start(paras):]                    # no chapter heading line in the narration
     h = Hindi(paras)
     if not paras:
         h.errors.append("the reply has no text")
         return h
-    if not HEADING.match(paras[0]) or len(paras[0]) > 150:
-        h.errors.append("the first line must be the heading 'चैप्टर <number in Hindi words>: <title in Hinglish>' "
-                        "and nothing else")
     for i, p in enumerate(paras):
         why = T.paragraph_problem(p)
         if why:
@@ -286,7 +286,7 @@ def validate_hindi(paras: list[str], english: str, names: dict, band: tuple[int,
     e_len = len(re.sub(r"\s", "", english))
     h_len = len(re.sub(r"\s", "", hindi_all))
     h.ratio = h_len / e_len if e_len else 1.0
-    h.words = sum(len(p.split()) for p in paras[1:])     # the heading line is not part of the narration
+    h.words = sum(len(p.split()) for p in paras)
     low, high = band
     if h.words > high:
         h.length_problem = (f"too long: {h.words} words; write between {low} and {high} words. Cut descriptions and "
@@ -310,10 +310,28 @@ def closest_attempt(tries: list[Hindi], target: int, band: tuple[int, int]) -> H
     return min(fit, key=lambda h: (bool(h.name_errors), distance(h)))
 
 
+def recap_request(names_text: str, narration: str) -> str:
+    return (f"{names_text}\n\nTHE EPISODE (Hinglish narration of every chapter, in order)\n{narration.strip()}\n\n"
+            f"REQUEST\nWrite the very quick recap of this whole episode now, following the recap rules. Return only "
+            f"the paragraphs, one blank line between them.")
+
+
+def recap_problems(paras: list[str], band: tuple[int, int]) -> list[str]:
+    """Why a recap cannot be saved: the narration checks per paragraph, then the word band."""
+    from novel.stages import episode_translate as T
+    out = [f"paragraph {i + 1} has a problem ({T.paragraph_problem(p)}): {C.excerpt(p, width=60)}"
+           for i, p in enumerate(paras) if T.paragraph_problem(p)]
+    words, (low, high) = sum(len(p.split()) for p in paras), band
+    # the model is told the exact band but cannot count words: it overshoots by 5-10%, so a margin is accepted
+    if not round(low * 0.9) <= words <= round(high * 1.15):
+        out.append(f"{words} words: write between {low} and {high}")
+    return out
+
+
 def translation_request(n: int, english: str, names_text: str) -> str:
     return (f"{names_text}\n\nCHAPTER {n} (English)\n{english.strip()}\n\nREQUEST\nWrite the Hinglish narration of "
-            f"chapter {n} now, following every narration rule. Return only the text: the heading line, then the "
-            f"paragraphs separated by one blank line.")
+            f"chapter {n} now, following every narration rule. Return only the text: the paragraphs separated by one "
+            f"blank line. No heading line: do not write the chapter number or title, start straight with the story.")
 
 
 def translation_retry(first: str, problems: list[str], previous: str) -> str:
@@ -326,8 +344,8 @@ def translation_continue(first: str, written: list[str]) -> str:
     return (f"{first}\n\nYOUR ANSWER SO FAR (it was cut off by the length limit; the last paragraph shown is the last "
             f"COMPLETE one):\n" + "\n\n".join(written)
             + "\n\nContinue from the paragraph after the last one above. Return ONLY the remaining paragraphs, in the "
-              "same style, one blank line between them; do not repeat anything above and do not write the heading "
-              "again.")
+              "same style, one blank line between them; do not repeat anything above and do not write any "
+              "heading.")
 
 
 # ------------------------------------------------------------------ the run
@@ -932,6 +950,9 @@ class Runner:
         step = f"chapter {n}: scenes"
         system = P.build_rules("images", **self.rules_args(bi.first, bi.last), chapter=n, window_count=count)
         base = images_instruction(n, count, bi.id)
+        from novel.core import settings
+        if str(settings.get("images.engine", book=self.book, ep=self.ep, default="flow")).lower() == "qwen":
+            base += P.QWEN_NOTE                            # the picture lines are drawn by Qwen-Image, not Flow
         feedback = None                                    # (say, previous text) after a rejection
         rest = None                                        # (missing windows, known groups, dropped lines) after a partial
         held = ""                                          # --redo: the lines the last partial import staged
@@ -1058,6 +1079,8 @@ class Runner:
                 return
             if ch.hindi == "written":
                 ch.need_translate = False
+        if any(c.hindi == "written" for c in chs):
+            self.run_recap()
 
     def run_scenes(self, chs: list[Ch]) -> None:
         by_n = {c.n: c for c in chs}
@@ -1260,6 +1283,56 @@ class Runner:
             if old is not None:
                 signal.signal(signal.SIGINT, old)
         return self.summary(chs)
+
+    # -------------------------------------------------------------- recap
+
+    def run_recap(self) -> bool:
+        """After a translation: a very quick recap of the whole episode (P.RECAP_WORDS, 60-90 words) ->
+        <episode>/recap.txt, for the intro of the next episode (novel intro init --ep N+1 --text-file <that file>).
+        One call with the narration of every chapter. Made again each time, when every chapter of the episode has
+        its Hindi (so a re-translated chapter never leaves an old recap). True when recap.txt was written."""
+        from novel.stages import episode_translate as T
+        lo, hi = self.episode_chapters()
+        out = self.ep_root / "recap.txt"
+        files = [self.ep_root / "hindi" / f"{n:05d}.txt" for n in range(lo, hi + 1)]
+        missing = [n for n, f in zip(range(lo, hi + 1), files) if not f.exists()]
+        if missing:
+            self.say(f"recap: not yet, no Hindi for chapter {', '.join(map(str, missing))}")
+            return False
+        band = P.RECAP_WORDS
+        system = P.build_rules("recap", **self.rules_args(lo, hi), recap_words=band)
+        first = recap_request("\n".join(P.names_lines(self.fresh_state())),
+                              "\n\n".join(f.read_text(encoding="utf-8").strip() for f in files))
+        problems, previous = None, ""
+        for attempt in range(1, self.cfg.t_attempts + 1):
+            user = first if problems is None else translation_retry(first, problems, previous)
+            res, _ = self.call("recap", f"recap: call {attempt}", system, user)
+            if res is None:
+                problems, previous = ["the reply was blocked; write the recap again"], ""
+                continue
+            paras = [T.apply_variants(p) for p in clean_hindi_reply(res.text)]
+            problems = recap_problems(paras, band)
+            if not problems:
+                out.write_text("\n\n".join(paras) + "\n", encoding="utf-8")
+                self.say(f"recap: written, {len(paras)} paragraphs, {sum(len(p.split()) for p in paras)} words -> {out}")
+                self.say(f'Next episode\'s intro: novel intro init --ep {self.ep + 1} --text-file "{out}"')
+                return True
+            previous = "\n\n".join(paras)
+            self.say(f"recap: rejected ({plural(len(problems), 'problem')}): {problems[0]}")
+        self.say("recap: failed; run novel write --recap to try again")
+        return False
+
+    def recap_only(self) -> int:
+        lo, hi = self.episode_chapters()
+        self.log = RunLog(self.gemini_dir / P.batch_id(lo, hi), utc_stamp())
+        try:
+            self.client = self.client or self.make_client()
+            return 0 if self.run_recap() else 1
+        except SystemExit as e:
+            self.out(f"novel write: {e.code}")
+        except RunStop as e:
+            self.out(f"STOPPED: {e}")
+        return 1
 
     # -------------------------------------------------------------- summary
 
@@ -1532,7 +1605,9 @@ class Runner:
             ch.need_scenes = True
             try:
                 self.run_translations([ch])
-                if ch.hindi == "written":
+                if ch.hindi == "written" and getattr(self.a, "no_scenes", False):
+                    ch.status = "complete"                 # the picture lines are made elsewhere (novel ktrial)
+                elif ch.hindi == "written":
                     self.run_scenes([ch])
             except RunStop:
                 ch.status = "stopped"

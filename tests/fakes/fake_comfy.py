@@ -201,11 +201,14 @@ class FakeComfy:
                     "node_id": "7", "node_type": "KSampler", "exception_type": "torch.OutOfMemoryError",
                     "exception_message": "CUDA out of memory"}]]}}})
         graph = p["graph"]
-        lat = next(n for n in graph.values() if n["class_type"] == "EmptyFlux2LatentImage")["inputs"]
+        lat = next(n for n in graph.values()
+                   if n["class_type"] in ("EmptyFlux2LatentImage", "MiniMaxH3ImageConditioning",
+                                          "EmptyLatentImage"))["inputs"]
         save_id, save = next((k, n) for k, n in graph.items() if n["class_type"] == "SaveImage")
         fname = f"{save['inputs']['filename_prefix']}_00001_.jpg"
         if fname not in self.outputs:
-            seed = next(n for n in graph.values() if n["class_type"] == "KSampler")["inputs"]["seed"]
+            sampler = next(n for n in graph.values() if n["class_type"] in ("KSampler", "RandomNoise"))["inputs"]
+            seed = sampler.get("seed", sampler.get("noise_seed"))
             self.outputs[fname] = make_jpeg(lat["width"], lat["height"], seed)
         return self._send(h, 200, {pid: {"outputs": {save_id: {"images": [
             {"filename": fname, "subfolder": "", "type": "output"}]}},

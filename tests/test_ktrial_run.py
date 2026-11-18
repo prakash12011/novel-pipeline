@@ -1191,3 +1191,144 @@ def test_report_shows_both_plates_side_by_side_and_survives_missing_or_pictures(
     assert 'src="plates/g01.jpg"' in page and f"{K.OR_DIR}/plates" not in page
     assert f"OpenRouter {korouter.MODEL}" in page and "0/4" in page and "$0.0000" in page
     assert not list((trial / "report" / "cut").glob("or-*"))
+
+
+# ---------------------------------------------------------------- MiniMax-H3-Image (second model, own folder)
+
+MM = kcomfy.MINIMAX
+
+
+def test_up_model_minimax_is_stored_in_session_and_server_json(env, tmp_path, capsys):
+    trial = make_trial(tmp_path)
+    assert K.cmd_up(ns(dry_run=True, model=MM), trial) == 0
+    assert "model minimax-h3" in capsys.readouterr().out
+    assert read(trial / "kaggle" / "dataset" / "session.json")["model"] == MM
+    assert (trial / "kaggle" / "dataset" / "kcomfy.py").read_bytes() == (REPO / "novel" / "kcomfy.py").read_bytes()
+    # FLUX stays the default: no key at all
+    assert K.cmd_up(ns(dry_run=True, model="flux"), trial) == 0
+    assert "model" not in read(trial / "kaggle" / "dataset" / "session.json")
+    assert K.cmd_up(ns(dry_run=True), trial) == 0
+    assert "model" not in read(trial / "kaggle" / "dataset" / "session.json")
+
+
+def test_up_pushes_and_records_the_model(env, tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_KTRIAL_URL_OVERRIDE", "http://127.0.0.1:9")
+    trial = make_trial(tmp_path)
+    assert K.cmd_up(ns(model=MM, no_wait=True, domain="x.ngrok-free.dev"), trial) == 0
+    assert read(trial / "server.json")["model"] == MM
+
+
+def test_minimax_run_writes_its_own_folder_and_leaves_the_flux_pictures(env, tmp_path, fc, capsys):
+    trial = make_trial(tmp_path)
+    write_server(trial, fc, comfy_user=None, password=None, model=MM)
+    fc.user = None
+    jpg(trial / "images" / "s01.jpg", seed=9)                       # an earlier FLUX picture
+    flux_bytes = (trial / "images" / "s01.jpg").read_bytes()
+    assert K.cmd_run(ns(), trial) == 0
+    root = trial / kcomfy.MM_DIR
+    assert (trial / "images" / "s01.jpg").read_bytes() == flux_bytes          # not touched, not skipped over
+    assert not (trial / "plates" / "g01.jpg").exists()
+    gs = graphs(fc)
+    assert len(gs) == 6                                                      # s01 is made too: its own folder is empty
+    for g in gs:
+        assert {n["class_type"] for n in g["graph"].values()} >= {"MiniMaxH3ImageConditioning", "KTrialUnetLoaderGGUF"}
+    cond = lambda g: node(g, "MiniMaxH3ImageConditioning")
+    assert (cond(gs[0])["width"], cond(gs[0])["height"]) == (W, H) and cond(gs[0])["prompt"] == "Place g01, empty."
+    # references: the plate comes from the MiniMax folder, wording is <Picture n>
+    assert cond(gs[2])["prompt"] == "One person <Picture 1> in <Picture 2>"
+    assert load_refs(gs[2]) == ["ktrial-lumian_lee.jpg", "ktrial-c0024-g01.jpg"]
+    assert fc.uploads["ktrial-c0024-g01.jpg"] == (root / "plates" / "g01.jpg").read_bytes()
+    for rel in ("plates/g01", "plates/g02", "images/s01", "images/s02", "images/s03", "images/s04"):
+        assert K._valid_jpeg(root / f"{rel}.jpg")
+        meta = read(root / f"{rel}.meta.json")
+        assert meta["model"] == kcomfy.MM_UNET_NAME and meta["text_encoder"] == kcomfy.MM_CLIP_NAME
+        assert meta["steps"] == 6 and meta["seconds"] is not None
+        assert (root / f"{rel}.prompt.txt").read_text(encoding="utf-8")        # the prompt that was sent
+    assert "<Picture 1>" in (root / "images" / "s01.prompt.txt").read_text(encoding="utf-8")
+    assert "<ref_image" in (trial / "images" / "s01.prompt.txt").read_text(encoding="utf-8")   # the file on disk stays FLUX's
+    log = [json.loads(l) for l in (root / "log.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [e["id"] for e in log] == ["g01", "g02", "s01", "s02", "s03", "s04"] and not (trial / "log.jsonl").exists()
+    assert f"pictures go to {root}" in capsys.readouterr().out
+
+
+def test_minimax_reroll_archives_picture_meta_and_prompt(env, tmp_path, fc):
+    trial = make_trial(tmp_path)
+    write_server(trial, fc, comfy_user=None, password=None, model=MM)
+    fc.user = None
+    assert K.cmd_run(ns(only="s03"), trial) == 0
+    root = trial / kcomfy.MM_DIR
+    assert K.cmd_run(ns(only="s03", reroll=True), trial) == 0
+    olds = list((root / "images" / "old").rglob("s03.*"))
+    assert sorted(p.name for p in olds) == ["s03.jpg", "s03.meta.json", "s03.prompt.txt"]
+    assert read(root / "images" / "s03.meta.json")["seed"] == 104        # next seed of the plan's 103
+
+
+# ---------------------------------------------------------------- Qwen-Image-2.1-Turbo (third model, own folder)
+
+QW = kcomfy.QWEN
+
+
+def test_up_model_qwen_and_a_second_ngrok_dataset_are_staged(env, tmp_path, capsys):
+    trial = make_trial(tmp_path)
+    assert K.cmd_up(ns(dry_run=True, model=QW, ngrok_dataset="ngrok-token-2"), trial) == 0
+    assert "model qwen-image-turbo" in capsys.readouterr().out
+    session = read(trial / "kaggle" / "dataset" / "session.json")
+    assert session["model"] == QW and session["ngrok_dataset"] == "ngrok-token-2"
+    meta = read(trial / "kaggle" / "kernel" / "kernel-metadata.json")
+    assert meta["dataset_sources"] == ["fakeuser/coi-ktrial", "fakeuser/hf-token", "fakeuser/ngrok-token-2"]
+    # default: the stored dataset name, nothing in the session
+    assert K.cmd_up(ns(dry_run=True), trial) == 0
+    assert "ngrok_dataset" not in read(trial / "kaggle" / "dataset" / "session.json")
+    assert read(trial / "kaggle" / "kernel" / "kernel-metadata.json")["dataset_sources"][-1] == "fakeuser/ngrok-token"
+    with pytest.raises(SystemExit, match="slug"):
+        K.cmd_up(ns(dry_run=True, ngrok_dataset="Bad Name/x"), trial)
+
+
+def test_a_second_ngrok_account_never_uses_the_stored_domain(env, tmp_path, monkeypatch):
+    K.domain_file().write_text("first-account.ngrok-free.dev\n", encoding="utf-8")
+    monkeypatch.delenv("NOVEL_NGROK_DOMAIN", raising=False)
+    assert K.ngrok_domain(ns()) == "first-account.ngrok-free.dev"                     # the normal case
+    assert K.ngrok_domain(ns(ngrok_dataset="ngrok-token-2")) is None                  # another token: no fallback
+    assert K.ngrok_domain(ns(ngrok_dataset="ngrok-token-2", domain="second.ngrok-free.dev"), save=False) == "second.ngrok-free.dev"
+    assert K.ngrok_domain(ns(ngrok_dataset="ngrok-token-2", domain="second.ngrok-free.dev")) == "second.ngrok-free.dev"
+    assert K.domain_file().read_text(encoding="utf-8").strip() == "first-account.ngrok-free.dev"   # not overwritten
+    monkeypatch.setenv("NOVEL_NGROK_DOMAIN", "other.ngrok-free.dev")
+    assert K.ngrok_domain(ns(ngrok_dataset="ngrok-token-2")) == "other.ngrok-free.dev"
+
+
+def test_qwen_run_writes_its_own_folder_and_sends_the_place_first(env, tmp_path, fc, capsys):
+    trial = make_trial(tmp_path)
+    write_server(trial, fc, comfy_user=None, password=None, model=QW)
+    fc.user = None
+    jpg(trial / "images" / "s01.jpg", seed=9)                       # an earlier FLUX picture
+    flux_bytes = (trial / "images" / "s01.jpg").read_bytes()
+    assert K.cmd_run(ns(), trial) == 0
+    root = trial / kcomfy.QW_DIR
+    assert (trial / "images" / "s01.jpg").read_bytes() == flux_bytes and not (trial / kcomfy.MM_DIR).exists()
+    gs = graphs(fc)
+    assert len(gs) == 6
+    for g in gs:
+        assert {n["class_type"] for n in g["graph"].values()} >= {"TextEncodeQwenImage21", "SamplerCustomAdvanced"}
+    enc = lambda g: node(g, "TextEncodeQwenImage21")
+    assert enc(gs[0])["prompt"] == "Place g01, empty."
+    # the plate (from the Qwen folder) is image_1; the prompt is renumbered to match
+    assert enc(gs[2])["prompt"] == "One person <image2> in <image1>"
+    assert load_refs(gs[2]) == ["ktrial-c0024-g01.jpg", "ktrial-lumian_lee.jpg"]
+    assert fc.uploads["ktrial-c0024-g01.jpg"] == (root / "plates" / "g01.jpg").read_bytes()
+    for rel in ("plates/g01", "plates/g02", "images/s01", "images/s02", "images/s03", "images/s04"):
+        assert K._valid_jpeg(root / f"{rel}.jpg")
+        meta = read(root / f"{rel}.meta.json")
+        assert meta["model"] == kcomfy.QW_UNET_NAME and meta["text_encoder"] == kcomfy.QW_CLIP_NAME and meta["steps"] == 8
+        assert (root / f"{rel}.prompt.txt").read_text(encoding="utf-8")
+    assert "<image1>" in (root / "images" / "s01.prompt.txt").read_text(encoding="utf-8")
+    assert "<ref_image" in (trial / "images" / "s01.prompt.txt").read_text(encoding="utf-8")    # the FLUX file stays
+    assert f"pictures go to {root}" in capsys.readouterr().out
+
+
+def test_a_server_without_a_model_is_flux(env, tmp_path, fc):
+    trial = make_trial(tmp_path)
+    write_server(trial, fc, comfy_user=None, password=None)
+    fc.user = None
+    assert K.cmd_run(ns(only="s03"), trial) == 0
+    assert (trial / "images" / "s03.jpg").exists() and not (trial / kcomfy.MM_DIR).exists()
+    assert node(graphs(fc)[-1], "UNETLoader")["unet_name"] == kcomfy.UNET_NAME

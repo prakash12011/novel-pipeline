@@ -23,15 +23,17 @@ novel status
 
 You see: a line like `[coi · E003 · ch 21-30]`, a table with one row per chapter (columns: text, hindi, lock, qa, scenes, chars, images, audio, capt, video), then `VERDICT: NOT READY (1 blocker)` or `READY TO BUILD`, then `Missing, in the order to run it:` with a numbered list. Every line of that list ends with the command that fixes it. **The first line is your next action.**
 
-**2. Make today's pictures.** Chrome must be open and signed in to Flow (`novel chrome` opens it; if it is closed, `novel images` offers to open it: answer `Y`).
+**2. Make today's pictures.** Pictures are drawn by **Qwen-Image on Kaggle** (setting `images.engine: qwen`). No Chrome, no Flow.
 
 ```cmd
 novel images
 ```
 
-You see: the plan line (`Plan: 571 pictures in 10 chapters; 0 done, ...`), the chapters it picked, then one progress line per picture, like `[12/220] c0021-s12 ...`. At the end a `--- summary ---` block: `saved this run`, `left in the episode`, and what to do next.
+You see, per chapter, `chapter 2: 68 pictures to make`. If no image server is running it starts one on a free Kaggle account (`Kaggle account seema: free`, then `still starting, 2 min` ... `the server answers at https://...`; about 7-10 minutes). Then one line per picture, like `s12  49.3s  avg 51.1s  3 left, ~3 min`, and `chapter 2: 68 pictures copied into ...\images\c0002`. A new character gets a character sheet first (`lumian_lee: lumian_lee_sheet_seed202.jpg`).
 
-How much it does: it takes the next **3 chapters** that still have pictures to make (setting `images.chapters_per_day`) and stops after **200 pictures** (`images.max_per_run`). It waits 3 seconds between pictures, rests 2 minutes after every 50 pictures and 5 minutes between chapters. How long one picture takes in Flow varies. Keep this window and the Chrome window visible: if Flow asks for a CAPTCHA, you clear it in Chrome (see "When something stops").
+How much it does: every chapter of the episode that has picture lines and is missing pictures. About 50-60 seconds per picture (a 68-picture chapter: about an hour). `--chapters 2-3` picks chapters, `--max 25` stops each chapter after its first 25 pictures. Ctrl+C is safe; run it again and finished pictures are skipped. The server stops by itself after 20 minutes without work.
+
+(Flow instead: set `images.engine: flow`; then Chrome must be open and signed in to Flow, see `novel chrome`.)
 
 **3. See what is left again.**
 
@@ -150,7 +152,9 @@ To use no AI at all: `novel qa --chapters 21-30 --only-code`. A chapter that was
 
 Takes: varies (one AI call per chapter unless `--only-code`).
 
-### Step 8. Approve
+### Step 8. Approve (Flow only)
+
+With Qwen (the default) skip steps 8 and 9: `novel images` builds its own prompts from the picture lines. They are for `images.engine: flow`.
 
 ```cmd
 novel approve --chapters 21-30
@@ -176,7 +180,7 @@ Takes: varies (Flow).
 
 ### Step 10. Narration, captions and pictures
 
-**10a. Open Chrome** (once per work session):
+**10a. Open Chrome** (Flow only; skip with Qwen, the default):
 
 ```cmd
 novel chrome
@@ -190,7 +194,7 @@ You see `Chrome answers on port 9222 (...)`, then three things to do in that Chr
 novel run
 ```
 
-It starts the narration (Kaggle) and the captions as **background jobs** and then makes pictures in **this window**, exactly like `novel images`. You see `tts       started   pid ...` and `captions  started   pid ...` and then the picture progress lines.
+It starts the narration (Kaggle) and the captions as **background jobs** and then makes pictures in **this window**, exactly like `novel images`. You see `tts       started   pid ...` and `captions  started   pid ...` and then the picture progress lines. The narration and the image server run on two different Kaggle accounts (see "Pictures with Qwen-Image on Kaggle").
 
 - The narration job pushes the Hindi to Kaggle, waits (it checks every `tts.poll_minutes` = 10 minutes) and brings the audio home. Time on Kaggle: varies. If the audio already exists (COI 3-6 do) it says `nothing to narrate`.
 - Captions are the English subtitles, written by Gemini through your API keys. They need no work from you.
@@ -204,7 +208,9 @@ It starts the narration (Kaggle) and the captions as **background jobs** and the
 novel images
 ```
 
-Run it each day until `novel status` shows all pictures done. For COI 21-30 (571 pictures, 3 chapters and at most 200 pictures per run) that is at least 4 runs. To choose chapters yourself: `novel images --chapters 24-25 --max 100`. After a Flow stop, see "When something stops".
+Run it until `novel status` shows all pictures done. With Qwen one run does every chapter that has picture lines (about an hour per 68-picture chapter); stop with Ctrl+C and run again whenever you like. To choose chapters yourself: `novel images --chapters 24-25`. With Flow it takes 3 chapters and at most 200 pictures per run; after a Flow stop, see "When something stops".
+
+Then make the 1920x1080 copies (or let `novel build` do it): `novel hd`.
 
 ### Step 12. Look at the pictures (optional)
 
@@ -232,6 +238,26 @@ novel extras cards
 
 Wait for the push to finish on Kaggle before `pull` (`novel tts status --ep 900` shows how far it is). You see the card videos being built. COI already has its cards. They go stale when you change the card words, the logo or the fonts; run `novel extras cards` again then.
 
+### Step 13b. Intro hook (optional; before the first chapter)
+
+A short spoken hook (or a recap of the last episode) that opens the video, drawn as comic panels with Qwen-Image-2.1 on
+Kaggle (not Flow). It lives in `extras\E9NNN` (9000 + the episode number). Put the Hindi in a text file, one paragraph
+per picture (about 5-7 s each), and write `extras\E9NNN\shots.json` with one shot per paragraph
+(`{"id": 1, "cast": ["lumian_lee", "skinless_monster"], "shot": "...", "scene": "..."}`; `cast` = bible keys whose Qwen
+character sheets in `_work\ktrial\c*\qwen-image-turbo\charsheet\` are sent as references).
+
+```cmd
+novel intro init --ep 1 --text-file hook.txt
+novel tts push --ep 9001 --chapters 1 --account seema     (the other account when the Qwen kernel uses yours)
+novel tts pull --ep 9001
+novel ktrial up --chapter 24 --model qwen-image-turbo     (only if the Kaggle ComfyUI is not running)
+novel intro images --ep 1                                 (--only s02 --seed 303 for another try)
+novel intro render --ep 1
+novel build
+```
+
+The join puts the intro first and lists it as `0:00 Intro`; chapters are listed as `Phase N: <title>`.
+
 ### Step 14. Build the video
 
 When `novel status` says `READY TO BUILD`:
@@ -240,7 +266,7 @@ When `novel status` says `READY TO BUILD`:
 novel build
 ```
 
-It renders every chapter that is not current, joins them with the disclaimer (and the subscribe cards) into one file and writes YouTube timestamps. You see per chapter `rendered (...), pass, 612.4 s, 410.2 MB`, then `video: ...\E003.mp4`, `duration: ...` and `timestamps:` lines. Then `next: novel meta`.
+It renders every chapter that is not current, joins them with the intro hook when there is one (and the subscribe cards; the disclaimer only when `video.disclaimer.enabled`) into one file and writes YouTube timestamps. You see per chapter `rendered (...), pass, 612.4 s, 410.2 MB`, then `video: ...\E003.mp4`, `duration: ...` and `timestamps:` lines. Then `next: novel meta`.
 
 - Not ready yet? It lists what is missing and stops before doing any work. To wait for the rest and then render slowly (default 2 chapters an hour): `novel build --when-ready` (change the pace with `--per-hour 3`). Ctrl+C is safe; run it again.
 - A quick look at the start of one chapter: `novel render --chapter 21 --end 30` renders the first 30 seconds of chapter 21.
@@ -757,6 +783,20 @@ Captions: in this style the English captions are lettered inside the panel being
 
 Two more settings change the page: `video.panels.paper` (the page colour) and `video.panels.dim` (how much the other panels fade). They are described in `docs/settings.md`.
 
+### Pictures with Qwen-Image on Kaggle (the default)
+
+`novel images` draws every picture with **Qwen-Image-2.1-Turbo** (8 steps, 1376x768) in ComfyUI on a Kaggle T4, reached through an ngrok tunnel. What makes the pictures consistent:
+
+- **Picture lines** (`novel write`): with `images.engine: qwen` the IMAGES request carries the Qwen rules: a story someone tells is drawn as that story in its own places, not the room it is told in; every extra person gets a look of their own (age, build, hair, clothes); every expression names the mouth, the eyes and the brows, changes from picture to picture and is never only "calm" or "focused". At most 2 named people per picture (`images.max_characters`).
+- **Character sheets**: each named person is sent with their sheet from `<book>\bible\qwen\<key>_sheet_seed202.jpg` (front, side, back and two face close-ups). A person without a sheet gets one made first (`novel ktrial charsheet --chapter N --missing`; one picture each). A special outfit (a bible variant) uses the Flow portrait from `bible\flow\` instead.
+- **Prompt guards** in every picture: identity only from the sheet (face, hair, skin, clothes, drawing style), the face of this picture in its own sentence ("subtle but clearly visible, not the neutral face of the reference"), "appears only once; every other person has a clearly different face, hair and clothes", clean eyes, hands with five fingers, no text.
+- **Files**: `images\cNNNN\sNN-2k.jpg` in the episode, the prompt beside it as `sNN.prompt.txt`. Each chapter works in `<book>\_work\ktrial\cNNNN\` (prompts, references, server address).
+- **HD**: `images.watermark: none` (Qwen pictures have no mark), so `novel hd` only upscales them to 1920x1080; nothing is cropped.
+
+A picture that came out wrong (a face doubled, a wrong expression): `novel ktrial run --chapter 21 --only s12 --reroll` draws it again with the next seed in the work folder; then `novel images --chapters 21` copies it into the episode.
+
+**Two Kaggle jobs, three accounts.** The image server (`kaggle\comfy_server.ipynb`, kernel `<user>/<book>-ktrial-comfy`) and the narration (`kaggle\episode_tts.ipynb`, kernel `<user>/hindi-audiobook-daily`) are separate notebooks. With `kaggle.pick_free: true` each job takes the first account of `kaggle.profiles` (prakash, seema, shashi) that has no notebook running, so they never share a GPU; `images.kaggle_profile` / `tts.kaggle_profile` is tried first, and `--account NAME` always wins. You see `Kaggle account seema: busy (seema12011/coi-ktrial-comfy)` and `Kaggle account shashi: free`. The image server needs the ngrok token as a private dataset `<user>/ngrok-token` on its account; a free account without it gets it uploaded from `kaggle\NGROK_AUTHTOKEN` (the fixed domain in `%USERPROFILE%\.kaggle\ngrok-domain` stays the same). A free ngrok account opens one tunnel at a time, so only one image server runs.
+
 ### Picture size
 
 Pictures are downloaded from Flow at 1K (1376x768) by default. The HD step then upscales each picture for the video after the Gemini mark is removed, so the video looks the same and the downloads are faster. To download at 2K (2752x1536) instead, set `images.quality: 2K` in `book.yaml`, or pass `--quality 2K` to `novel images` for one run.
@@ -910,7 +950,7 @@ Checks this PC (Python, packages, Node, ffmpeg, Chrome, Kaggle, keys, fonts) and
 - `novel jobs --stop NAME`: stops a job (`images` stops cleanly after the current picture; the Kaggle run itself keeps going when you stop `tts`).
 
 ### novel tts
-- `novel tts push [--book B] [--ep N] [--chapters A-B] [--account NAME] [--dry-run]`: sends the locked Hindi of chapters without audio to Kaggle. `--dry-run` stages and lists, calls nothing.
+- `novel tts push [--book B] [--ep N] [--chapters A-B] [--account NAME] [--dry-run]`: sends the locked Hindi of chapters without audio to Kaggle. With `kaggle.pick_free` it takes a free account (not the one running the image server). `--dry-run` stages and lists, calls nothing.
 - `novel tts status [--book B] [--ep N]`: Kaggle's state of the run.
 - `novel tts pull [--book B] [--ep N]`: brings finished audio and timing home.
 - `novel tts watch [--book B] [--ep N] [--interval-seconds S]`: checks every few minutes and pulls when done.
@@ -920,18 +960,28 @@ Checks this PC (Python, packages, Node, ffmpeg, Chrome, Kaggle, keys, fonts) and
 `novel captions [--book B] [--ep N] [--chapters A-B] [--force]`: writes the English subtitle text for locked chapters. `--force` redoes current ones. (A build makes missing captions itself when a Gemini key exists.)
 
 ### novel images
-`novel images [--book B] [--ep N] [--chapters A-B] [--max N] [--batch K] [--resend ID] [--upgrade] [--quality 1K|2K] [--i-checked-flow] [--dry-run]`: makes pictures in Flow. Without `--chapters` it takes the next `images.chapters_per_day` chapters that have work. `--max` caps pictures this run. `--batch K` sends K prompts side by side. `--resend c0021-s05` sends one picture again on purpose. `--upgrade` upgrades 1K pictures to 2K. `--quality 2K` (or `1K`) sets the download size for this run only; the default is `images.quality`, which is 1K. `--i-checked-flow` after a Flow stop. `--dry-run` shows what it would do and the command, runs nothing.
+`novel images [--book B] [--ep N] [--chapters A-B] [--max N] [--dry-run]` with `images.engine: qwen` (the default): draws every missing picture of the episode's chapters with Qwen-Image on Kaggle (starts the server on a free account when none answers, makes missing character sheets first) and writes `images\cNNNN\sNN-2k.jpg`. `--max N`: at most the first N pictures of each chapter. `--dry-run`: lists what is missing, starts nothing. With `images.engine: flow`, `novel images [--book B] [--ep N] [--chapters A-B] [--max N] [--batch K] [--resend ID] [--upgrade] [--quality 1K|2K] [--i-checked-flow] [--dry-run]` makes pictures in Flow. Without `--chapters` it takes the next `images.chapters_per_day` chapters that have work. `--max` caps pictures this run. `--batch K` sends K prompts side by side. `--resend c0021-s05` sends one picture again on purpose. `--upgrade` upgrades 1K pictures to 2K. `--quality 2K` (or `1K`) sets the download size for this run only; the default is `images.quality`, which is 1K. `--i-checked-flow` after a Flow stop. `--dry-run` shows what it would do and the command, runs nothing.
 
 ### novel ktrial
-A trial, kept apart from production: pictures for one chapter from the open model FLUX.3 klein, run in ComfyUI on a Kaggle T4 and reached through a tunnel. Everything is written to `<book>/_work/ktrial/cNNNN/`; the episode and the bible are never changed.
+The image server and the per-chapter work folder behind `novel images` (Qwen), also usable by hand for experiments (FLUX.3 klein, MiniMax-H3, Qwen). Everything is written to `<book>/_work/ktrial/cNNNN/`; only `charsheet` writes to the bible (`bible\qwen\`).
+- `novel ktrial charsheet --chapter N [--keys a,b] [--missing]`: makes Qwen character sheets on the running Qwen server (`--keys`: these bible keys; `--missing`: every referenced person of chapter N without a sheet). Text only, from the bible look, seed 202, into `<book>\bible\qwen\<key>_sheet_seed202.jpg` (+ `manifest.json`).
 - `novel ktrial scenes --chapter N [--book B] [--ep E] [--max-characters 2] [--from-production] [--force]`: asks Gemini for the chapter's picture lines with the close-framing rules. `--from-production` copies the existing scene file instead.
 - `novel ktrial prompts --chapter N`: writes the prompts, the place-plate prompts, the character references and `plan.json`. No GPU.
 - `novel ktrial up --chapter N [--account NAME] [--tunnel ngrok|cloudflared] [--domain HOST] [--idle-minutes 20] [--max-hours 6] [--gpu 1] [--comfy-arg=ARG] [--dry-run] [--no-wait]`: starts the ComfyUI server on Kaggle. With your ngrok dev domain (`--domain`, remembered in `<kaggle home>/ngrok-domain`, or `NOVEL_NGROK_DOMAIN`) the address is fixed and `up` waits until the server answers; without one it prints how to find the address on the notebook page.
+  - `up --model flux|minimax-h3|qwen-image-turbo`: which model the server loads (default FLUX.3 klein). `run` then writes to `<trial>\minimax-h3\` or `<trial>\qwen-image-turbo\`, so the FLUX pictures stay. Qwen-Image-2.1-Turbo (INT8, 17.3 GB of files, 8 steps) gets the place background as its first reference, because it edits `image_1`.
+  - `up --ngrok-dataset SLUG`: takes the ngrok token from another private Kaggle dataset of the account (file `NGROK_AUTHTOKEN`; default `ngrok-token`), for a second ngrok account. Give that account's own `--domain`; it is not remembered and the stored one is left alone.
 - `novel ktrial url --chapter N ADDRESS`: stores the server's address by hand when no fixed domain is set, then checks that it answers.
 - `novel ktrial status --chapter N`: Kaggle's state, the speed probe and the address.
 - `novel ktrial down --chapter N`: stops the server.
 - `novel ktrial run --chapter N [--only s05,g02] [--limit N] [--reroll] [--redo] [--plates-only] [--via kaggle|openrouter] [--resolution 1K|2K] [--budget D]`: makes the missing pictures (place plates first). `--reroll` tries the next seed, `--redo` the same seed again.
 - `novel ktrial report --chapter N`: `report.html`, each window's Flow picture beside the trial picture, with the panel cutouts.
+
+### novel kllm
+A coding LLM (Qwen3.6-35B-A3B, llama.cpp) on a Kaggle "GPU T4 x2" notebook, reached through a Cloudflare tunnel, for Pi or any OpenAI/Anthropic-style harness. It stops itself after 30 minutes without a request. State is global, in `<novel home>\kllm\server.json`.
+- `novel kllm up [--account NAME] [--idle-minutes 30] [--max-hours 11.5] [--context 131072] [--thinking on|off] [--pad-kb N] [--smoke] [--dry-run] [--no-wait]`: pushes the notebook, waits for the server's address (it arrives through ntfy.sh), checks it answers and writes the address and key into Pi's `models.json` (provider `kaggle`). It tries the context 131072, then 65536, then 32768. `--smoke` is a CPU test run with a tiny model. Then: `pi --model kaggle/qwen-local`. Double-clicking `bin\llm-start.cmd` does the same.
+- `novel kllm status`: Kaggle's state, the address, the context in use, uptime and minutes idle.
+- `novel kllm url ADDRESS`: stores the address by hand if it did not arrive by itself (ntfy.sh down).
+- `novel kllm down [--no-wait]`: stops the server now (so the idle wait does not use quota) and waits for the kernel to end. `bin\llm-stop.cmd` does the same.
 
 ### novel sheet
 `novel sheet --chapter N [--book B] [--ep E] [--open]`: web page of one chapter's pictures with their text. `--open` opens it.
@@ -950,6 +1000,18 @@ A trial, kept apart from production: pictures for one chapter from the open mode
 
 ### novel build
 `novel build [--book B] [--ep E] [--chapters A-B] [--force] [--when-ready] [--no-hd] [--per-hour N]`: renders what is not current and joins the episode. `--chapters` builds part of an episode (written as `E003-c21-25.mp4`). `--force` renders again. `--when-ready` waits for missing inputs, then renders at a steady pace (`--per-hour N`, default 2). `--no-hd` skips the HD step.
+
+### novel intro
+- `novel intro init --ep E --text-file F`: stores the Hindi hook (one paragraph per picture) in `extras\E9NNN`.
+- `novel intro images --ep E [--only s02] [--seed N] [--redo]`: Qwen pictures from `shots.json` on the running Kaggle ComfyUI.
+- `novel intro render --ep E`: the panels-style clip, no title card; `novel build` puts it first.
+
+### novel strip-heading
+`novel strip-heading [--ep E] [--chapters A-B] [--dry-run]`: removes the spoken "चैप्टर ...: ..." heading from chapters
+written before the change: the Hindi line, and when narrated the start of the mp3 (cut, no new Kaggle run), the timing,
+captions and scene paragraph numbers. Originals go to `old\heading\`. New chapters are written without a heading
+(the Gemini prompts no longer ask for one, and one that comes back is dropped). The title card shows only "Episode N"
+on the first chapter.
 
 ### novel extras
 - `novel extras voice [--book B]`: writes the subscribe message and prints the narration commands.

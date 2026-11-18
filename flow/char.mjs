@@ -80,8 +80,14 @@ async function prompt(text) {
   if ((await agentMode(p)) && !process.env.FLOW_ALLOW_AGENT) throw new Error('Flow is in Agent mode - switch it off (or set FLOW_ALLOW_AGENT=1) - nothing sent');
   const box = p.locator('div[role=textbox]').first();
   await box.click(); await box.fill(text); await wait(800);
-  const chip = await p.locator('button[aria-label="Select model family"]').first().innerText().catch(() => '');
-  const found = chipModel(chip);
+  const chipBtn = p.locator('button[aria-label="Select model family"]').first();
+  let found = chipModel(await chipBtn.innerText().catch(() => ''));
+  if (!modelMatches(EXPECTED_MODEL, found)) {   // the character page opens on Flow's default model on every load: pick the expected one
+    await chipBtn.click().catch(() => {});
+    await p.locator('[role=option],[role=menuitem],[role=menuitemradio],[role=radio]').filter({hasText: EXPECTED_MODEL}).first().click({timeout: 5000}).catch(() => {});
+    await wait(1000);
+    found = chipModel(await chipBtn.innerText().catch(() => ''));
+  }
   if (!modelMatches(EXPECTED_MODEL, found)) throw new Error(`model is "${found}", expected "${EXPECTED_MODEL}" - nothing sent`);
 }
 

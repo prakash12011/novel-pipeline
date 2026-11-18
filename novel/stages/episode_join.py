@@ -120,6 +120,12 @@ def make_disclaimer(ep_root: Path, rate: int = 24000, cfg: dict | None = None) -
     return out
 
 
+def phase_title(title: str) -> str:
+    """The marker and timestamp name of a chapter: "Chapter 2: Prank" -> "Phase 2: Prank"."""
+    import re
+    return re.sub(r"^\s*Chapter\b", "Phase", str(title), count=1, flags=re.I)
+
+
 def join(episode: int, chapters: str | None, *, watermark: Path | None = None) -> Path:
     ep_root = E.root(episode)
     info = E.info(ep_root)
@@ -153,12 +159,17 @@ def join(episode: int, chapters: str | None, *, watermark: Path | None = None) -
     every = int(sub_cfg["silent"]["every_chapters"] or 0)
     files = [("Disclaimer", card, False, "disclaimer")] if card else []
     first_in, last_in = parts[0][0].idx == ep_first, parts[-1][0].idx == ep_last
+    # The intro hook (episode_intro, `novel intro`): first of all, listed as "Intro" at 0:00.
+    from . import episode_intro
+    intro = episode_intro.clip(ep_no) if first_in else None
+    if intro:
+        files.insert(0, ("Intro", intro, True, "intro"))
     voiced_at_start = bool(cards and first_in and (placement == "start" or
                                                    (placement == "start-except-first-episode" and ep_no > 1)))
     if voiced_at_start:
         files.append(("Subscribe", cards["voiced"], False, "subscribe-voiced"))
     for c, p in parts:
-        files.append((c.title, p, True, "chapter", c.idx))
+        files.append((phase_title(c.title), p, True, "chapter", c.idx))
         force = E.cfg(ep_no, c.idx)["video"]["subscribe"].get("silent_after")
         due = (every > 0 and (c.idx - ep_first + 1) % every == 0 and c.idx != parts[-1][0].idx) if force is None \
             else bool(force)
@@ -212,7 +223,9 @@ def join(episode: int, chapters: str | None, *, watermark: Path | None = None) -
     # The same list with true positions in the final video, for tools: nothing is shifted.
     at, chap_rows, card_rows = 0.0, [], []
     for m in marks:
-        if m.kind == "chapter":
+        if m.kind == "intro":
+            card_rows.append({"kind": "intro", "start": round(at, 3), "seconds": round(m.seconds, 3)})
+        elif m.kind == "chapter":
             chap_rows.append({"chapter": m.chapter, "title": m.title, "start": round(at, 3)})
         else:
             card_rows.append({"kind": m.kind, "start": round(at, 3), "seconds": round(m.seconds, 3)})

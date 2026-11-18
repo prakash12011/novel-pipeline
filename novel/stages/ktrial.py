@@ -24,13 +24,14 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import statistics
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
 from novel import bible as B
-from novel import kcomfy, kprompts
+from novel import kcomfy, korouter, kprompts
 from novel.core import context, paths, settings
 from novel.gemini import contract as C
 from novel.gemini import importer as I
@@ -40,14 +41,27 @@ from novel.prompts import PromptError, _locations
 from novel.stages import episode_scenes as S
 
 WIDTH, HEIGHT = 1376, 768          # 1K pictures: the FHD panels video only uses cutouts
-FRAMING = "tight"
+FRAMING = "wide"                   # the Flow-era rules: audiences and varied shots ("tight" gave one room, one face)
 DEFAULT_MAX_CHARACTERS = 2
+OPUS_MODEL = "anthropic/claude-opus-5.5"      # OpenRouter id of claude-opus-5-5
 REF_JPEG_QUALITY = 92
 assert WIDTH % kcomfy.SIZE_STEP == 0 and HEIGHT % kcomfy.SIZE_STEP == 0
 
 # Added to the IMAGES request: write.images_instruction lets Gemini add a BIBLE block, which this trial cannot keep.
 TRIAL_NOTE = ("\nThis is a trial and the bible is read-only: do not write a BIBLE block, and use only the characters, "
               "variants and locations that are in the CURRENT BIBLE above.")
+# Added when Claude writes the lines (--writer opus): says what the lines are for. Mirrors the findings in kprompts.
+KLEIN_NOTE = (
+    "\nThe pictures will NOT be made by Google Flow. Each image line becomes a prompt for FLUX.3 klein, an open "
+    "image model that draws exactly what the line says and nothing else. Each picture gets one reference portrait "
+    "per person (cast order) plus one background picture per group, so keep every group's place, light and "
+    "positions consistent and never contradict a group's place in a single image. Write for a model that cannot "
+    "infer: one visible action per line, concrete things the camera can see (posture, hands, objects, expression), "
+    "short positive wording, no inner thoughts or backstory, no readable text, pages or signs. Close framing: at "
+    "most two people, chest up for medium shots; a 'detail' is an object alone with no person.")
+# Added when Gemini writes the lines: Qwen draws each picture fresh from the words (no place picture), so the words
+# must carry the faces, the people around and what makes this picture differ from the last.
+QWEN_NOTE = P.QWEN_NOTE           # the Qwen picture-line rules, shared with novel write (images.engine: qwen)
 MAX_FIX_ITEMS = I.MAX_FIX_ITEMS
 
 
@@ -69,6 +83,22 @@ def scenes_file(trial: Path, chapter: int) -> Path:
 def ref_stem(key: str, var: str) -> str:
     """`lumian_lee` for the base variant, `lumian_lee.storm_coat` otherwise (the names `novel characters make` uses)."""
     return key if var in (None, "", "base") else f"{key}.{var}"
+
+
+def extra_locations(trial: Path) -> dict:
+    """Places only this trial knows (<trial>/locations.json, {key: location}), e.g. where a told story happens; the bible
+    is read-only here. {} when there is no file."""
+    f = trial / "locations.json"
+    return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+
+
+def qwen_sheet(work: Path, key: str) -> Path | None:
+    """The Qwen character sheet of `key` under <book>/_work/ktrial (c*/qwen-image-turbo/charsheet/<key>_sheet_seed*.jpg),
+    seed 202 first, then the newest; None when there is none."""
+    sheets = Path(work).parent.parent / "bible" / "qwen"          # <book>/bible/qwen: where sheets live now
+    found = sorted([*sheets.glob(f"{key}_sheet_seed*.jpg"), *work.glob(f"c*/qwen-image-turbo/charsheet/{key}_sheet_seed*.jpg")],
+                   key=lambda p: ("qwen-image-turbo" in p.parts, "seed202" not in p.name, -p.stat().st_mtime))
+    return found[0] if found else None
 
 
 def episode_of(book: str, chapter: int) -> int:
@@ -172,6 +202,8 @@ def _call(client, folder: Path, step: str, system: str, user: str, out=print):
         res = client.generate(system, user, temperature=0.3)
     except SystemExit as e:                                   # quota used up, or a refusal
         raise TrialError(f"Gemini stopped the run: {e.code}")
+    except korouter.RouterError as e:
+        raise TrialError(f"OpenRouter stopped the run: {e}")
     except ValueError as e:
         out(f"{step}: blocked: {e}")
         return None
@@ -233,9 +265,8 @@ def check_reply(text: str, imp: I.Importer, ctx: C.ChapterCtx, max_people: int, 
     if not problems:
         used = {im["group"] for im in images.values()}
         warnings += [f"group {g} is not used by any image" for g in groups if g not in used]
-        # the tight rules allow many 'medium' pictures: the contract's "medium more than a third" warning is dropped
-        warnings += [w for w in C.chapter_warnings(groups, images, ctx) if "(at most a third)" not in w]
-        warnings += [f"image {k}: {len(im['cast'])} people in the cast; the tight framing wants at most {max_people}"
+        warnings += C.chapter_warnings(groups, images, ctx)
+        warnings += [f"image {k}: {len(im['cast'])} people in the cast; the trial wants at most {max_people}"
                      for k, im in sorted(images.items()) if len(im["cast"]) > max_people]
     return groups, images, warnings, problems
 
@@ -307,21 +338,29 @@ def _scenes(args, client) -> int:
         return 0
 
     max_people = int(getattr(args, "max_characters", None) or DEFAULT_MAX_CHARACTERS)
-    cfg = W.load_settings(book, ep)
+    cfg = W.load_settings(book, ep, model=getattr(args, "model", None))
     wins = window_texts(ep_root, chapter, need_lock=True)
     count = len(wins)
     english = P.chapters_text(paths.book_dir(book), chapter, chapter)
     imp = I.Importer(book, dry_run=True, out=lambda t: None)         # read-only use: read_lines and build_doc
     state = imp.state
+    state["locations"]["locations"].update(extra_locations(trial))
     ctx = C.ChapterCtx(chapter, count, state, max_people, S.BANNED)
     batch = P.batch_id(chapter, chapter)
     system = P.build_rules("images", **rules_args(book, ep, chapter, max_people), chapter=chapter,
                            window_count=count, framing=FRAMING)
     base = W.images_instruction(chapter, count, batch) + TRIAL_NOTE
     gem = trial / "gemini"
-    if client is None:
-        client = make_client(cfg, gem)
-    print(f"chapter {chapter}: {count} windows; tight rules, at most {max_people} people; model {cfg.model}")
+    opus = getattr(args, "writer", "gemini") == "opus"
+    if opus:
+        base += KLEIN_NOTE
+        gem = trial / "opus"
+        client = client or korouter.Chat(korouter.find_key(), OPUS_MODEL)
+    else:
+        base += QWEN_NOTE
+        client = client or make_client(cfg, gem)
+    print(f"chapter {chapter}: {count} windows; {FRAMING} rules, at most {max_people} named people; "
+          f"model {OPUS_MODEL if opus else cfg.model}")
 
     feedback = None                                    # (what the tool said, the rejected answer)
     for attempt in range(1, cfg.attempts + 1):
@@ -381,8 +420,9 @@ def _prompts(args) -> int:
     doc = _load_scenes(trial, chapter)
     bdir = B.bible_dir(book)
     characters, locations = B.load_characters(bdir), B.load_locations(bdir)
+    locations["locations"].update(extra_locations(trial))
     try:
-        pl = kprompts.plan(doc, chapter, characters, locations)
+        pl = kprompts.plan(doc, chapter, characters, locations, plates=False)
     except PromptError as e:
         raise TrialError(str(e))
     wins = window_texts(ep_root, chapter, need_lock=False)
@@ -398,15 +438,23 @@ def _prompts(args) -> int:
         for r in sh["refs"]:
             if r["role"] == "character":
                 people[(r["key"], r["var"])] = r["display"]
+    # The whole Qwen character sheet (face, body and clothes from every side) when the person has one: the base look
+    # only, a sheet has no variants. Otherwise the central square of the Flow portrait.
     flow = bdir / "flow"
-    sources = {kv: flow / f"{ref_stem(*kv)}-portrait.jpg" for kv in people}
+    sheets = {kv: qwen_sheet(trial.parent, kv[0]) if kv[1] in (None, "", "base") else None for kv in people}
+    sources = {kv: sheets[kv] or flow / f"{ref_stem(*kv)}-portrait.jpg" for kv in people}
     missing = [str(f) for f in sources.values() if not f.exists()]
     if missing:
         raise TrialError("portrait files are missing (make them with: novel characters make):\n  "
                          + "\n  ".join(missing))
 
     for kv, src in sources.items():
-        square_crop(src, trial / "refs" / f"{ref_stem(*kv)}.jpg")
+        dest = trial / "refs" / f"{ref_stem(*kv)}.jpg"
+        if sheets[kv]:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dest)
+        else:
+            square_crop(src, dest)
 
     scene_by_id = {s["id"]: s for s in doc["scenes"]}
     locs = _locations(locations)
@@ -440,7 +488,8 @@ def _prompts(args) -> int:
     by_refs = Counter(len(s["refs"]) for s in shots)
     sizes = {sh["id"]: len(sh["text"]) for sh in pl["shots"]}
     longest = sorted(sizes, key=lambda i: (-sizes[i], i))[:3]
-    print(f"{len(shots)} shots, {len(plates)} plates, {len(sources)} reference picture(s) in {trial}")
+    print(f"{len(shots)} shots, {len(plates)} plates, {len(sources)} reference picture(s) in {trial} "
+          f"({sum(1 for s in sheets.values() if s)} character sheet(s), the rest portrait crops)")
     print("shots by number of references: " + ", ".join(f"{k}: {by_refs[k]}" for k in sorted(by_refs)))
     print(f"prompt length (characters): min {min(sizes.values())}, mean {statistics.mean(sizes.values()):.0f}, "
           f"max {max(sizes.values())}")

@@ -44,7 +44,9 @@ from pathlib import Path
 from PIL import Image
 
 BASE_URL = "https://openrouter.ai/api/v1"
-MODEL = "google/gemini-nano-banana-2.1"       # trial; was "black-forest-labs/flux-3-image-klein"
+# Trial model. $NOVEL_OPENROUTER_MODEL replaces it for one shell (with $NOVEL_OPENROUTER_DIR for the output folder, see
+# ktrial_run.OR_DIR), so another model can be tried without editing code. Earlier: "black-forest-labs/flux-3-image-klein".
+MODEL = os.environ.get("NOVEL_OPENROUTER_MODEL", "").strip() or "google/gemini-nano-banana-2.1"
 KEY_VAR = "OPENROUTER_API_KEY"
 COST_PER_IMAGE = 0.014          # fallback estimate when the answer carries no cost (the 2K price)
 RESOLUTION_PRICE = {"768": 0.008, "1K": 0.009, "1.5K": 0.011, "2K": 0.014, "4K": 0.036}     # USD, from the endpoint list
@@ -67,9 +69,24 @@ def estimate(resolution: str = "1K") -> float:
     return RESOLUTION_PRICE.get(str(resolution), COST_PER_IMAGE)
 
 
+def is_minimax() -> bool:
+    """MiniMax H3 Image (OpenRouter id `minimax/minimax-h3-image...`): its own reference wording, no seed, no
+    prompt enhancement (see generate)."""
+    return MODEL.startswith("minimax/")
+
+
+# The only passthrough key the MiniMax endpoint lists (`allowed_passthrough_parameters` of
+# /api/v1/images/models/minimax/minimax-h3-image/endpoints, read 2026-11-16), sent under provider.options["minimax"]
+# as OpenRouter's image guide describes. It switches off MiniMax's own prompt rewriting, so the prompt that reaches the
+# model is the one we wrote, as on the Kaggle server. The value type (boolean) is a guess from the name.
+MINIMAX_OPTIONS = {"disable_prompt_enhanced": True}
+
+
 def hosted_text(prompt: str) -> str:
-    """`<ref_image_0>` (ComfyUI's, 0-based) -> `image 1` (the hosted API's wording, 1-based)."""
-    return re.sub(r"<ref_image_(\d+)>", lambda m: f"image {int(m.group(1)) + 1}", prompt)
+    """`<ref_image_0>` (ComfyUI's, 0-based) -> `image 1` (the hosted API's wording, 1-based). For MiniMax H3 Image
+    `<Picture 1>`, the wording its model card uses and the Kaggle trial sent."""
+    word = "<Picture {}>" if is_minimax() else "image {}"
+    return re.sub(r"<ref_image_(\d+)>", lambda m: word.format(int(m.group(1)) + 1), prompt)
 
 
 # ---------------------------------------------------------------- the key
@@ -162,12 +179,12 @@ class OpenRouter:
             pass
         _sleep(delay)
 
-    def _post(self, payload: dict) -> dict:
+    def _post(self, payload: dict, path: str = "/images") -> dict:
         body = json.dumps(payload).encode("utf-8")
         last = "no attempt was made"
         for attempt in range(self.retries + 1):
             req = urllib.request.Request(
-                f"{self.base_url}/images", data=body, method="POST",
+                f"{self.base_url}{path}", data=body, method="POST",
                 headers={"Authorization": f"Bearer {self._key}", "Content-Type": "application/json",
                          "Accept": "application/json", "User-Agent": USER_AGENT})
             retry_after = None
@@ -217,7 +234,13 @@ class OpenRouter:
             raise RouterError(f"{len(refs)} references: this model takes at most {MAX_REFS}")
         payload: dict = {"model": MODEL, "prompt": prompt, "n": 1, "aspect_ratio": aspect_ratio,
                          "resolution": resolution, "output_format": output_format}
-        if seed is not None:
+        if is_minimax():
+            # the MiniMax endpoint does not list `seed` among its parameters: not sent. It refuses the enhancement
+            # switch when references are attached (HTTP 400 "disable_prompt_enhanced is not supported for image
+            # edits, prompts are always enhanced", 2026-11-16), so only text-only pictures (plates) carry it.
+            if not refs:
+                payload["provider"] = {"options": {"minimax": dict(MINIMAX_OPTIONS)}}
+        elif seed is not None:
             payload["seed"] = int(seed)       # UNVERIFIED: the accepted range (the endpoint list only says it is supported)
         if refs:
             payload["input_references"] = [{"type": "image_url", "image_url": {"url": _data_url(r)}} for r in refs]
@@ -250,3 +273,28 @@ class OpenRouter:
         except (OSError, ValueError):
             pass
         return data, took, info
+
+
+class Chat(OpenRouter):
+    """Text through OpenRouter's chat endpoint, shaped like episode_translate.Gemini so `ktrial scenes` can use either."""
+
+    def __init__(self, key: str, model: str, **kw):
+        super().__init__(key, timeout=kw.pop("timeout", 900), **kw)
+        self.model = model
+
+    def generate(self, system: str, text: str, *, temperature: float = 0.3, max_output_tokens: int = 32000):
+        from novel.stages.episode_translate import GenResult
+        t0 = time.monotonic()
+        a = self._post({"model": self.model, "temperature": temperature, "max_tokens": max_output_tokens,
+                        "messages": [{"role": "system", "content": system}, {"role": "user", "content": text}]},
+                       "/chat/completions")
+        try:
+            ch = a["choices"][0]
+            out = ch["message"]["content"] or ""
+        except (KeyError, IndexError, TypeError):
+            raise RouterError(f"OpenRouter's answer holds no text: {_scrub(_trim(json.dumps(a)[:400]), self._key)}") from None
+        u = a.get("usage") if isinstance(a.get("usage"), dict) else {}
+        return GenResult(text=out, finish="MAX_TOKENS" if ch.get("finish_reason") == "length" else "STOP",
+                         model=a.get("model") or self.model, key=0, seconds=round(time.monotonic() - t0, 1),
+                         usage={"promptTokenCount": u.get("prompt_tokens", 0),
+                                "candidatesTokenCount": u.get("completion_tokens", 0), "cost": u.get("cost")})

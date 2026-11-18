@@ -298,6 +298,10 @@ PART_A_FULL_TEXT = """PART A - THE NARRATION (HINDI block)
   reveal, clue and line of dialogue that matters. Action scenes stay detailed: tell them move by move, in order. Add
   nothing that is not in the chapter.
 - Cut repeated inner thoughts and filler.
+- Open by setting the scene: where and when it is, who is there (by name) and what is going on, before the first
+  event.
+- A story, memory or rumour a character tells is retold in full, beat by beat, one event per sentence, in the order
+  it is told: never squeezed into one summary line. The talk around it (questions, jokes, introductions) stays short.
 - ACTION SCENES (fights, chases, traps, escapes, powers in use): never summarise. Tell them blow by blow, as if live:
   where everyone stands, what each does next and why, which weapon, trick or power, how the enemy reacts, near misses,
   what goes wrong and exactly how it ends. One move per sentence, in order. These parts get the most words.
@@ -309,15 +313,16 @@ PART_A_FULL_TEXT = """PART A - THE NARRATION (HINDI block)
 - Numbers as Hindi words (तीन दिन), never digits. Devanagari only: no Latin letters at all.
 - Names exactly as in the NAMES list. A new name: spell it as it sounds, add it to the BIBLE as a "name" line,
   and keep that spelling everywhere.
-- First line: चैप्टर <chapter number in Hindi words>: <title in Hinglish>. No other headings, notes or summaries.
+- No heading line: never write the chapter number or the chapter title; start straight with the story. No
+  headings, notes or summaries.
 - End each chapter on a small hook.
 """
 
-PICTURE_MARKERS = """- PICTURE MARKERS: put {1}, {2}, {3} ... in the text where a new picture starts. The first paragraph after the
-  heading starts with {1}. Put a new marker whenever what we should SEE changes (new place, new person acting or
+PICTURE_MARKERS = """- PICTURE MARKERS: put {1}, {2}, {3} ... in the text where a new picture starts. The first paragraph starts
+  with {1}. Put a new marker whenever what we should SEE changes (new place, new person acting or
   speaking, new action, a jump in time), and at the latest every two sentences (about {paced} seconds, ~{chars} letters).
   A marker always stands at the start of a sentence, never inside one, never two in a row. Numbers run from 1 in
-  every chapter with no gaps. The heading line has no marker.
+  every chapter with no gaps.
 """
 
 PART_A_FULL = PART_A_FULL_TEXT + PICTURE_MARKERS
@@ -586,19 +591,37 @@ Inside a ```jsonl code fence, one JSON object per line, double quotes, no commen
 """
 
 NARRATION_API = """HOW YOU ANSWER
-Return the Hinglish narration of the chapter as plain text: the heading line, then the paragraphs. No code fence, no
+Return the Hinglish narration of the chapter as plain text: only the paragraphs (no heading line, no chapter number
+or title). No code fence, no
 block lines, no notes, no commentary, no picture markers. If your answer gets cut off, the next request asks you to
 continue from the last complete paragraph.
+"""
+
+
+RECAP_WORDS = (60, 90)           # the whole recap: about 30-40 seconds spoken
+
+RECAP_API = """THE RECAP
+The REQUEST section holds the finished Hinglish narration of every chapter of one episode. Write a very quick recap
+of the whole episode, spoken at the start of the NEXT episode so a viewer knows where the story stands.
+- {recap_low} to {recap_high} words in all (about thirty to forty seconds spoken), in 4 to 6 short paragraphs of one
+  or two sentences, separated by one blank line. Each paragraph is one picture on screen, so one clear moment each.
+- Only the biggest events of the episode, in order: who did what and what it led to. Leave out everything else. Add
+  nothing that is not in the narration.
+- End on the open question or danger the episode left hanging.
+- Language: {HINGLISH}
+- Storyteller voice, mostly present tense. Dialogue is retold by the narrator, no quotation marks.
+- Numbers as Hindi words, never digits. Devanagari only: no Latin letters at all. Names exactly as in the NAMES list.
+- Return only the paragraphs: no heading, no title, no code fence, no notes, no picture markers.
 """
 
 
 def build_rules(part: str, *, channel: str, title: str, first: int, last: int, paced: float,
                 chars_per_second: float, max_characters: int, chapter: int | None = None,
                 window_count: int | None = None, review: bool = False, target: int = 800, low: int = 640,
-                high: int = 960, framing: str = "wide") -> str:
+                high: int = 960, framing: str = "wide", recap_words: tuple = (0, 0)) -> str:
     """The rules text of ONE API call, taken from the same sections `build_prompt` uses but without the
     conversation part ("how we work", "type next"): part is "translate" (the Hinglish narration of a chapter),
-    "bible" (the BIBLE block of a batch) or "images" (the IMAGES block of one chapter, scenes mode).
+    "recap" (a very short recap of the whole episode), "bible" (the BIBLE block of a batch) or "images" (the IMAGES block of one chapter, scenes mode).
     target / low / high: translate.target_words and the band around it (words of the narration).
     framing (images only): "wide" is the camera far back (Google Flow); "tight" is a close camera, at most two
     people and no group staging (an open image model)."""
@@ -610,7 +633,7 @@ def build_rules(part: str, *, channel: str, title: str, first: int, last: int, p
         "channel": channel, "title": title, "first": first, "last": last, "batch": batch_id(first, last),
         "ex4": f"{ex:04d}", "paced": f"{paced:g}", "chars": round(paced * chars_per_second),
         "max_characters": max_characters, "HINGLISH": T.HINGLISH, "BANNED": ", ".join(banned_words()),
-        "target": target, "low": low, "high": high,
+        "target": target, "low": low, "high": high, "recap_low": recap_words[0], "recap_high": recap_words[1],
         "n_label": "window number", "first_rule": FIRST_RULE_SCENES,
         "window_list": (f"- chapter {chapter}: {window_count} windows" if chapter is not None else ""),
     }
@@ -622,6 +645,8 @@ def build_rules(part: str, *, channel: str, title: str, first: int, last: int, p
             "PART A - THE NARRATION (HINDI block)", "THE NARRATION")
         assert "BIBLE" not in narration, "the narration rules must not mention the BIBLE"
         parts = [ROLE_API, narration, NARRATION_API]
+    elif part == "recap":
+        parts = [ROLE_API, RECAP_API]
     elif part == "bible":
         parts = [ROLE_API, HOW_API, BLOCK_FORMAT_API, PART_C + (REVIEW_TASK if review else "")]
     elif part == "images":
@@ -712,3 +737,29 @@ def generate(book: str, first: int, last: int, mode: str = "auto", out_dir: Path
     return {"batch": batch, "mode": mode, "folder": folder, "files": files, "prompt": prompt, "meta": meta,
             "windows": {n: len(w) for n, w in per_chapter.items()}, "review": review, "notes": notes,
             "upload": [files["chapters"], files["bible"]] + ([files["windows"]] if mode == "scenes" else [])}
+
+
+# Added to the IMAGES request when the pictures are made by Qwen-Image (images.engine: qwen) and by the trial.
+# Qwen draws each picture fresh from the words (no place picture), so the words carry the faces, the people
+# around and what makes this picture differ from the last.
+QWEN_NOTE = (
+    "\nEach image line becomes a prompt for an image model that draws only what the line says. "
+    "\"mood\": the face in this picture, subtle but clearly visible, naming all three: the mouth (lips parted, one "
+    "corner pulled down, a faint smile, jaw clenched), the eyes (narrowed, widened, lowered, glancing aside) and the "
+    "brows (raised, knitted, one lifted), e.g. \"lips slightly parted, eyes widened, brows raised\". It differs from "
+    "the same person's previous picture in at least one of the three; never exaggerated, never \"neutral\", and never "
+    "only a feeling word such as calm, focused, steady or thoughtful. "
+    "\"others\": whenever the place has people (a tavern, street, market, square, an audience), say who they are, how "
+    "many and how they react, e.g. \"four farmers at the tables leaning in, one laughing, one frowning\"; leave it "
+    "empty only when the person is truly alone. Give every extra person a look of their own that differs from the "
+    "named people (age, build, hair, clothes), e.g. \"a bald, heavy-set mover in a grey apron\"; the image model "
+    "otherwise draws them with a named person's face. "
+    "Each picture shows what ITS OWN window narrates. When a window narrates what a person TELLS (a memory, a past "
+    "job, a rumour: \"I did X, then Y happened\"), draw that told event itself, with the teller acting it out inside "
+    "the told place, not the room where it is told; give each told place its own group using the matching place of "
+    "the bible, and move one new moment per picture (arrival, discovery, reaction), never the same place from another "
+    "camera. The person is always in the picture: never an empty room for a window where someone acts. Only windows "
+    "that narrate the telling itself (listeners, laughter, replies, drinks, introductions, the opening and the end) "
+    "are drawn in the telling room. "
+    "\"action\": name the spot inside the place, and one thing in the foreground or background that makes this "
+    "picture different from the previous one.")
