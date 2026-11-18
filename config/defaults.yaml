@@ -4,6 +4,7 @@ tts: {engine: maya2, model: maya-research/maya2-native, voice: Anirban, kaggle_p
 images:
   engine: qwen       # qwen: Qwen-Image-2.1-Turbo on the Kaggle ComfyUI (novel images); flow: Google Flow in Chrome
   kaggle_profile: null   # the image server's preferred Kaggle account (kaggle.pick_free may choose another)
+  cf_hostname: null      # a named Cloudflare tunnel's public hostname: the image server's primary address (ngrok is the fallback)
   flow_project: null
   flow_model: "Nano Banana Pro"
   allow_agent: false
@@ -23,6 +24,12 @@ images:
   quality: 1K
   alert_repeat_seconds: 30
   watermark: none   # Qwen pictures have no mark. Flow downloads: crop (cut it off), remove (novel clean) or none
+  qa:               # picture QA through OpenCode Go (OPENCODE_API_KEY in secrets.env; skipped without it)
+    enabled: true
+    base_url: https://opencode.ai/inference/go/v1
+    panel: [claude-haiku-5-5, qwen4-max]   # first check, asked at once (at most 3); chosen on 12 labelled pictures 2026-11-18
+    spare: [qwen3.7-plus]                  # stands in for a used-up panel model (catches all, but fails good ones too)
+    referee: gemini-4-argon                      # settles a panel fail, lists the fixes, checks the redraw
 video:
   fps: 24
   style: kenburns   # kenburns (one full-screen picture at a time) or panels (comic panels the camera slides between)
@@ -40,7 +47,9 @@ video:
   disclaimer_font: assets/fonts/NotoSans-Regular.ttf
   disclaimer_font_bold: assets/fonts/NotoSans-SemiBold.ttf
   hd: {enabled: auto}
-gemini: {api_model: gemini-3.5-flash-lite, chapters_per_run: 5, parallel: 1, max_attempts_per_block: 3, fallback_models: [], min_seconds_between_calls: 4}
+gemini: {api_model: gemini-3.5-flash-lite, chapters_per_run: 5, parallel: 1, max_attempts_per_block: 3, fallback_models: [], min_seconds_between_calls: 4,
+         free_tier: {enabled: true, per_minute: 5, per_day: 20},   # per key; all spent -> OpenRouter
+         force_openrouter: false}   # true (or NOVEL_FORCE_OPENROUTER=1): every Gemini call goes to OpenRouter
 qa: {reviewer: claude, fallback: gemini, parallel: 3, omission_ratio: 0.45}
 translate: {target_words: 900, words_tolerance: 0.20, max_attempts: 4}
 publish: {title_template: null, description_template: null, tags: [], hashtags: [], playlist_url: null, category: Entertainment, research_seeds: [], ai: claude}

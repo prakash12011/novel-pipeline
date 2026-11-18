@@ -33,7 +33,7 @@ from novel import flowrun as F
 from novel.core import chromelock, context, paths, settings
 
 USAGE = ("usage: novel images [--book B] [--ep N] [--chapters A-B] [--max N] [--batch K] [--resend ID] "
-         "[--upgrade] [--quality 1K|2K] [--i-checked-flow] [--dry-run]")
+         "[--upgrade] [--quality 1K|2K] [--i-checked-flow] [--dry-run] [--no-qa]")
 
 # runner option -> settings key (a missing key leaves the runner's own default in place)
 OPTION_KEYS = [
@@ -144,6 +144,7 @@ def main(argv, inject=None, ask=input, interactive=None) -> int:
                     help="download size for this run (default: images.quality, 1K)")
     ap.add_argument("--i-checked-flow", action="store_true", dest="checked")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--no-qa", action="store_true", help="Qwen engine: skip the picture QA for this run")
     a = ap.parse_args(argv)
     if interactive is None:
         interactive = F.is_interactive()
@@ -158,7 +159,7 @@ def main(argv, inject=None, ask=input, interactive=None) -> int:
     img = eff.get("images") or {}
     if str(img.get("engine") or "flow").lower() == "qwen":          # Qwen-Image on Kaggle: no Chrome, no Flow
         from novel.stages import qwen_images
-        return qwen_images.run(book, ep, a.chapters, a.max_n, a.dry_run)
+        return qwen_images.run(book, ep, a.chapters, a.max_n, a.dry_run, qa=not a.no_qa)
     ep_flag = f" --ep {ep}"
     setting = str(img.get("quality") or "").upper()
     size = "1K" if (a.quality or setting) == "1K" else "2K"     # anything but 1K is the normal 2K download

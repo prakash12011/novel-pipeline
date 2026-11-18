@@ -19,9 +19,13 @@ USAGE = ("usage: novel ktrial scenes --chapter N [--book B] [--ep N] [--max-char
          "       novel ktrial run --chapter N [--only s05,s07,g01] [--limit N] [--reroll] [--redo] [--plates-only]\n"
          "                        [--via kaggle|openrouter] [--resolution 1K|2K] [--budget D]\n"
          "       novel ktrial charsheet --chapter N [--keys a,b] [--missing]   (Qwen character sheets -> bible/qwen)\n"
+         "       novel ktrial front --chapter N [--keys a,b] [--redo]   (front views -> bible/qwen/front)\n"
+         "       novel ktrial qa --chapter N [--status]   (picture QA by hand / the status list of each picture)\n"
+         "       novel ktrial qa-probe --chapter N [--picture FILE]   (which QA models see pictures and answer)\n"
          "Everything else goes to <book>/_work/ktrial/c<chapter>; nothing in episodes/ is written.")
 
-SUBCOMMANDS = ("scenes", "prompts", "up", "url", "status", "down", "run", "report", "charsheet")
+SUBCOMMANDS = ("scenes", "prompts", "up", "url", "status", "down", "run", "report", "charsheet", "front", "qa",
+               "qa-probe")
 
 
 def build_parser(sub: str) -> argparse.ArgumentParser:
@@ -63,6 +67,14 @@ def build_parser(sub: str) -> argparse.ArgumentParser:
         ap.add_argument("--keys", help="comma list of bible keys to make a Qwen character sheet for")
         ap.add_argument("--missing", action="store_true",
                         help="also every referenced person of the chapter that has no sheet yet")
+    if sub == "front":
+        ap.add_argument("--keys", help="comma list of bible keys (default: everyone with a Qwen sheet)")
+        ap.add_argument("--redo", action="store_true", help="draw them again (the old pictures go to old/)")
+    if sub == "qa":
+        ap.add_argument("--status", action="store_true",
+                        help="only print the status list: each picture's state, tries and what QA found")
+    if sub == "qa-probe":
+        ap.add_argument("--picture", help="the picture to send (default: the first one of the chapter)")
     if sub == "url":
         ap.add_argument("address", help="the server's address, e.g. https://xxxx.ngrok-free.app")
     if sub == "run":
@@ -104,4 +116,27 @@ def main(argv) -> int:
         return ktrial.cmd_prompts(a)
     from novel.stages import ktrial_run                    # the GPU half: imported only when it is needed
     trial = ktrial.trial_dir(book, a.chapter)
+    if sub == "front":
+        from novel.stages import kfront
+        return kfront.cmd_front(a, trial)
+    if sub == "qa-probe":
+        return _qa_probe(a, trial)
     return getattr(ktrial_run, f"cmd_{sub}")(a, trial)
+
+
+def _qa_probe(a, trial) -> int:
+    from pathlib import Path
+    from novel import kqa
+    from novel.core import settings
+    key = kqa.find_key()
+    if not key:
+        print(f"no {kqa.KEY_VAR}: add a line {kqa.KEY_VAR}=... to secrets.env")
+        return 1
+    pics = sorted((trial / kcomfy.QW_DIR / "images").glob("s*.jpg"))
+    pic = Path(a.picture) if a.picture else (pics[0] if pics else None)
+    if pic is None or not pic.exists():
+        print("no picture to send: pass --picture FILE")
+        return 1
+    cfg = (settings.effective(a.book).get("images") or {}).get("qa") or {}
+    print(f"asking every QA model about {pic}")
+    return kqa.probe(cfg, key, pic)

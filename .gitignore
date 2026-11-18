@@ -16,3 +16,4 @@ data/
 
 # Tailscale auth key for the Kaggle LLM experiment (secret)
 kaggle/TAILSCALE_AUTHKEY
+CLOUDFLARE_TUNNEL_TOKEN*

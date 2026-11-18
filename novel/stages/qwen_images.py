@@ -54,27 +54,27 @@ def adopt(trial: Path, img_dir: Path) -> int:
             if p.with_suffix(".prompt.txt").exists():
                 shutil.copy2(p.with_suffix(".prompt.txt"), img_dir / f"{p.stem}.prompt.txt")
             n += 1
+    if (src.parent / "qa.json").exists():                  # the picture QA record travels with the pictures
+        shutil.copy2(src.parent / "qa.json", img_dir / "qa.json")
     return n
 
 
 def live_server(book: str) -> dict | None:
     """The newest recorded Qwen server of the book that still answers, else None."""
-    from novel.kcomfy import ComfyError
-    from .ktrial_run import _comfy
+    from .ktrial_run import answering
     found = sorted((paths.book_dir(book) / "_work" / "ktrial").glob("c*/server.json"),
                    key=lambda p: -p.stat().st_mtime)
     for f in found:
         s = json.loads(f.read_text(encoding="utf-8"))
         if s.get("model") == kcomfy.QWEN and s.get("url"):
-            try:
-                _comfy(s, retries=1, backoff=0.5).ping()
-                return s
-            except ComfyError:
-                continue
+            live = answering(s)
+            if live is not None:
+                return live
     return None
 
 
-def run(book: str, ep: int, chapters: str | None = None, limit: int | None = None, dry: bool = False) -> int:
+def run(book: str, ep: int, chapters: str | None = None, limit: int | None = None, dry: bool = False,
+        qa: bool = True) -> int:
     from . import episode_scenes as S
     from . import ktrial as K
     from . import ktrial_run as KR
@@ -121,8 +121,11 @@ def run(book: str, ep: int, chapters: str | None = None, limit: int | None = Non
         if K.cmd_prompts(ch) != 0:
             failed += 1
             continue
+        if not qa:
+            print(f"chapter {n}: picture QA skipped (--no-qa)")
+        # with qa: each picture is checked as soon as it is drawn, a failed one redrawn once (status list qa.json)
         rc = KR.cmd_run(SimpleNamespace(only=None, limit=limit, reroll=False, redo=False, plates_only=False,
-                                        via="kaggle", resolution=None, budget=None), trial)
+                                        via="kaggle", resolution=None, budget=None, qa=qa, book=book), trial)
         copied = adopt(trial, ep_root / "images" / f"c{n:04d}")
         print(f"chapter {n}: {copied} pictures copied into {ep_root / 'images' / f'c{n:04d}'}")
         failed += rc != 0

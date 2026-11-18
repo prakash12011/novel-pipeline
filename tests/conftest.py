@@ -18,6 +18,13 @@ def _silent_alerts(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_gemini_free_tier_count(monkeypatch):
+    """Tests never touch the real <novel home>/gemini_usage.json (test_keybudget tests the counter itself)."""
+    from novel.stages import episode_translate
+    monkeypatch.setattr(episode_translate, "default_budget", lambda model, keys: None)
+
+
+@pytest.fixture(autouse=True)
 def _flow_image_defaults(monkeypatch, tmp_path_factory):
     text = settings.defaults_file().read_text(encoding="utf-8")
     for key, value in FLOW_IMAGES.items():

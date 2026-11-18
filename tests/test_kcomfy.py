@@ -169,6 +169,24 @@ def test_auth_proxy_in_front_of_comfy():
             proxy.shutdown()
 
 
+def test_auth_proxy_routes_the_second_card_prefix_to_its_own_comfy():
+    with FakeComfy() as one, FakeComfy() as two:
+        proxy = kcomfy.serve_auth_proxy(0, one.url, "ktrial", "pw", routes={kcomfy.SECOND_PREFIX: two.url})
+        try:
+            url = f"http://127.0.0.1:{proxy.server_address[1]}"
+            fast(url, user="ktrial", password="pw").ping()
+            n_one, n_two = len(one.requests), len(two.requests)
+            c2 = fast(url + kcomfy.SECOND_PREFIX, user="ktrial", password="pw")
+            name = c2.upload_bytes(kcomfy.tiny_png(), "b.png")
+            data, _ = c2.generate("y", 4, 64, 48, [name], "p", timeout=10)
+            assert data[:2] == b"\xff\xd8"
+            assert len(one.requests) == n_one and len(two.requests) > n_two       # all of it went to the second
+            with pytest.raises(ComfyError, match="401"):
+                fast(url + kcomfy.SECOND_PREFIX).ping()                            # same password on both cards
+        finally:
+            proxy.shutdown()
+
+
 # ---------------------------------------------------------------- the notebook
 
 def test_notebook_structure():
@@ -178,7 +196,10 @@ def test_notebook_structure():
     assert kinds[0] == "markdown" and set(kinds[1:]) == {"code"}
     text = "".join("".join(c["source"]) for c in nb["cells"])
     assert "@DATASET@" in text and "KTRIAL URL" in text and "_find_dataset" in text
-    assert 'session.get("domain")' in text and 'url="https://" + DOMAIN' in text      # the fixed ngrok dev domain
+    assert 'session.get("domain")' in text and 'url="https://" + domain' in text      # the fixed ngrok dev domain
+    # the tunnel order: the named Cloudflare tunnel first, then ngrok, then a quick tunnel; a second card behind /g2
+    assert 'ORDER = (["named"] if CF_HOST else []) + (["ngrok"] if TUNNEL == "ngrok" else []) + ["quick"]' in text
+    assert "routes={kcomfy.SECOND_PREFIX:" in text and "KTRIAL SECOND CARD" in text
     for i, c in enumerate(nb["cells"]):
         if c["cell_type"] != "code":
             continue

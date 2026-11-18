@@ -70,25 +70,19 @@ DETAIL_WITH_PERSON = ("medium close shot from the chest up: the person holds the
 HEAD = "16:9 illustration."
 KEEP_PLACE = "Keep the place of {ref}: the same walls, ground, furniture and light."
 NO_WRITING = " Any page, book, letter or sign is blank, with no writing."
-# White specks in the irises (c0001 s28, 2026-11-18); the negative prompt is unused at cfg 1, so it is said here.
-EYES = " Eyes are drawn cleanly: solid coloured irises and dark pupils, at most one tiny highlight, no white marks, spots or glare on the eyes."
-CLOSING = ("Exactly one of each named person, in a single scene: not a reference sheet, no multiple views."
-           " No text, speech bubbles, captions or borders."
-           " Hands are drawn simply and correctly, five fingers each." + EYES + NO_WRITING)
+# The closing is plain picture text. Instruction-style sentences ("taking only who they are from the reference",
+# "appears only once; every other person has a different face") helped little with two references, so they went;
+# what they guarded is now said visually: one scene, five fingers, clean eyes (white specks in the irises, c0001 s28).
+CLOSING = ("One single scene, not a reference sheet, no multiple views. No text, speech bubbles, captions or borders."
+           " Hands with five fingers. Clean eyes, no white specks." + NO_WRITING)
 # A person who has a reference picture: the picture, not the words, decides face and clothes. A text "wearing a linen
 # shirt" beat a portrait with a black shirt (2026-11-16, chapter 24), so the clothes clause is dropped from the look.
-# The face is "the same person", not "the same picture": "exactly as in" copied the portrait's neutral face (c0001).
-LOCK = ("Draw {name} once, taking only who they are from {ref}: face shape, hair, skin tone, clothes and drawing "
-        "style. The pose and the facial expression come from this scene, not from the reference.")
-# The sheets have a neutral face and it won over "expression: ..." at the end of the line: four or five pictures in a row
-# looked alike (c0001, 2026-11-18). The face gets its own sentence right after the lock.
-FACE = "{name}'s face in this picture: {mood}; subtle but clearly visible{ref}."
-FACE_REF = ", not the neutral face of the reference"
 CLOTHES = re.compile(r",?\s+wearing\b.*$", re.S)     # shortcut: finds only a look written with "wearing", upgrade when a look names clothes otherwise
-# An extra person without a look of their own got the only face the model had: a second Lumian pushing the trolley
-# (c0001 s12), a second Ryan at the bar (s01). The negative prompt is unused at cfg 1, so it is said here.
-ONCE = ("{who} {verb} only once. Every other person in the picture is a different person, with a clearly different "
-        "face, hair and clothes from {who}.")
+# Two references in one picture: Qwen drew one sheet twice or put one person's face on the other (Lumian three times,
+# Pierre twice, the barman with Lumian's face; c0001 s35-s60, 2026-11-18). So each person is ONE block - where they
+# stand, who, which reference, how they look, pose, face - and two or more people are named as different kinds of
+# person ("the strapping eighteen-year-old lad" / "the thin, skinny middle-aged village farmer").
+NUMBER = {2: "TWO", 3: "THREE", 4: "FOUR"}
 CLOSING_EMPTY = "Nobody in the picture. No text, speech bubbles, captions or borders." + NO_WRITING
 PLATE_CLOSING = "Wide view of the whole place, empty: nobody in the picture. No text, captions or borders."
 
@@ -132,28 +126,40 @@ def _clip(text) -> str:
 
 
 def _person_line(m: dict, number: int | None) -> str:
+    """One person as one block: [WHERE: Name (<ref>) - look; pose; hands; wearing; face]."""
     c = m["cast"]
-    head = m["display"] if number is None else f"{m['display']} ({_ref(number)})"
+    who = m["display"] if number is None else f"{m['display']} ({_ref(number)})"
     look = _one(m["look"])
     if number is not None:
         look = CLOTHES.sub("", look)
-    pieces = [_clip(c.get("position")), _clip(c.get("pose"))]
-    pieces = [p for p in pieces if p]
+    bits = [b for b in (_clip(look), _clip(c.get("pose"))) if b]
     hands = _clip(c.get("hands"))
     if hands and not hands.lower().startswith("empty"):   # empty hands are left out: naming them pulls them into view
-        pieces.append(f"hands: {hands}")
-    line = f"- {head}:"
-    if look:
-        line += f" {_sentence(look)}"
-    if number is not None:
-        line += " " + LOCK.format(name=m["display"], ref=_ref(number))
-    if _clip(c.get("mood")):
-        line += " " + FACE.format(name=m["display"], mood=_clip(c.get("mood")), ref=FACE_REF if number is not None else "")
-    if pieces:
-        line += " " + "; ".join(pieces) + "."
+        bits.append(f"hands: {hands}")
     if _clip(c.get("wearing")):
-        line += f" Wearing in this picture: {_clip(c.get('wearing'))}."
-    return line
+        bits.append(f"wearing {_clip(c.get('wearing'))}")
+    if _clip(c.get("mood")):
+        bits.append(f"face: {_clip(c.get('mood'))}")
+    where = _clip(c.get("position"))
+    return f"[{where.upper() + ': ' if where else ''}{who}" + (" - " + "; ".join(bits) if bits else "") + "]"
+
+
+def _kind(m: dict) -> str:
+    """What kind of person, for telling two apart: the look before its first "with", whole comma pieces while they
+    stay within six words ("the thin, skinny middle-aged village farmer", "the lean young man, curly red hair")."""
+    out: list[str] = []
+    for piece in CLOTHES.sub("", _one(m["look"])).split(" with ")[0].split(","):
+        if out and sum(len(p.split()) for p in out) + len(piece.split()) > 6:
+            break
+        out.append(piece.strip())
+    return ", ".join(p for p in out if p).rstrip(" .;")
+
+
+def _people_head(members: list[dict]) -> str:
+    if len(members) == 1:
+        return f"One named person, drawn once: {members[0]['display']}."
+    kinds = "; ".join(f"{m['display']} is the {_kind(m)}" if _kind(m) else m["display"] for m in members)
+    return f"{NUMBER.get(len(members), len(members))} DIFFERENT people, each drawn once, clearly unlike each other: {kinds}."
 
 
 def klein_prompt(scene: dict, doc: dict, chapter: int, bible: dict, locations: dict, *, plate: bool = True) -> dict:
@@ -183,10 +189,8 @@ def klein_prompt(scene: dict, doc: dict, chapter: int, bible: dict, locations: d
         plate_no = len(refs) - 1
 
     parts = [_style(bible)]
-    if refs:
-        sentences = [f"{_ref(i)} is {r['display']}." if r["role"] == "character" else
-                     f"{_ref(i)} is the place." for i, r in enumerate(refs)]
-        parts.append(" ".join(sentences))
+    if plate:                                   # the people's references are named in their own blocks
+        parts.append(f"{_ref(plate_no)} is the place.")
 
     place = [f"PLACE: {_clip(loc.get('name') or doc['groups'][gid]['loc'])}."]
     setting = _setting(scene, doc, locations)
@@ -201,9 +205,11 @@ def klein_prompt(scene: dict, doc: dict, chapter: int, bible: dict, locations: d
     parts.append(" ".join(place))
 
     lines = [_person_line(m, number.get((m["key"], m["var"])) if m["flow_name"] else None) for m in members]
+    if members:
+        lines.insert(0, _people_head(members))
     others = _clip(scene.get("others"))
     if others and not no_others(scene.get("others")):
-        lines.append(f"Also in the picture: {others}.")
+        lines.append(f"In the background, smaller and plainly different from them: {others}.")
     if lines:
         parts.append("\n".join(lines))
 
@@ -214,9 +220,6 @@ def klein_prompt(scene: dict, doc: dict, chapter: int, bible: dict, locations: d
         shot_text = DETAIL_WITH_PERSON
     parts.append(f"SHOT: {shot_text}.")
     parts.append(f"SCENE: {_one(scene.get('action') or scene.get('scene'))}")
-    named = [r["display"] for r in refs if r["role"] == "character"]
-    if named:
-        parts.append(ONCE.format(who=" and ".join(named), verb="appears" if len(named) == 1 else "each appear"))
     parts.append(CLOSING if members else CLOSING_EMPTY)
     return {"text": "\n\n".join(parts) + "\n", "refs": refs, "seed": seed_for(chapter, f"s{sid:02d}")}
 

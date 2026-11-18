@@ -21,6 +21,7 @@ COMMANDS = [
     ("prompt", "Write the Gemini prompt and source files for a chapter batch", "novel.commands.prompt_cmd:main"),
     ("import", "File a Gemini reply from the clipboard or a file", "novel.commands.import_cmd:main"),
     ("write", "Write the Hindi, bible and picture lines with the Gemini API", "novel.commands.write_cmd:main"),
+    ("quota", "Free-tier Gemini calls used today, per key", "novel.commands.gemini_usage_cmd:main"),
     ("qa", "Check translations, scenes and prompts", "novel.commands.qa_cmd:main"),
     ("approve", "Lock the Hindi and write image prompts and the Flow plan", "novel.commands.approve_cmd:main"),
     ("characters", "list | props | sheet | convert | make", "novel.commands.characters_cmd:main"),

@@ -203,6 +203,26 @@ def api_keys() -> list[str]:
     return keys
 
 
+def force_openrouter() -> bool:
+    """Every Gemini call goes straight to OpenRouter: NOVEL_FORCE_OPENROUTER=1 for one command, or the setting
+    gemini.force_openrouter: true."""
+    env = os.environ.get("NOVEL_FORCE_OPENROUTER", "").strip().lower()
+    if env:
+        return env not in ("0", "false", "no", "off")
+    from novel.core import settings
+    return bool(settings.get("gemini.force_openrouter", default=False))
+
+
+def default_budget(model: str, keys: list[str]):
+    """The free-tier counter of gemini.free_tier (None when it is off): calls per key per minute and per day."""
+    from novel.core import keybudget, paths, settings
+    ft = settings.get("gemini.free_tier", default={}) or {}
+    if not ft.get("enabled"):
+        return None
+    return keybudget.KeyBudget(paths.home() / keybudget.FILE, keys, model,
+                               int(ft.get("per_minute") or 5), int(ft.get("per_day") or 20))
+
+
 class GeminiStop(SystemExit):
     """A stop the run cannot fix by itself. Uncaught, it ends the program with its message (as before)."""
 
@@ -247,6 +267,12 @@ class Gemini:
         self._lock = threading.Lock()
         self._last = None
         self._sticky = (0, 0.0)               # (index in the model list, until when): a fallback keeps being used
+        self._budgets: dict = {}              # model -> KeyBudget (gemini.free_tier), None when it is off
+
+    def _budget(self, model: str):
+        if model not in self._budgets:
+            self._budgets[model] = default_budget(model, self.keys)
+        return self._budgets[model]
 
     def _post(self, body: dict, model: str | None = None) -> dict:
         model = model or self.model
@@ -304,10 +330,35 @@ class Gemini:
             body["generationConfig"]["responseMimeType"] = "application/json"
         if max_output_tokens:
             body["generationConfig"]["maxOutputTokens"] = max_output_tokens
+        if force_openrouter():
+            r = self._router(system, text, temperature, max_output_tokens, "OpenRouter is forced")
+            if r is None:
+                raise GeminiStop("OpenRouter is forced (gemini.force_openrouter / NOVEL_FORCE_OPENROUTER) but did not "
+                                 "answer: check OPENROUTER_API_KEY")
+            return r
         models = [self.model] + self.fallback_models
         mi = self._sticky[0] if self.clock() < self._sticky[1] and self._sticky[0] < len(models) else 0
         limited, waits, hits, drops = 0, 0, 0, 0
         for attempt in range(1, 60):
+            budget = self._budget(models[mi])
+            if budget is not None:                  # the free tier: pick a key with calls left, before calling
+                pick = budget.take(self.k)
+                if pick is None:
+                    if mi + 1 < len(models):
+                        mi += 1
+                        continue
+                    r = self._router(system, text, temperature, max_output_tokens,
+                                     "every Gemini key has used its free calls for today")
+                    if r is not None:
+                        return r
+                    raise QuotaExhausted("every Gemini key has used its free calls for today (gemini.free_tier) and "
+                                         "OpenRouter did not answer; the count resets at midnight Pacific")
+                if isinstance(pick, float):
+                    self.say(f"    free tier: every key used its {budget.per_minute} calls this minute, "
+                             f"waiting {pick:.0f}s")
+                    self.sleep(pick)
+                    continue
+                self.k = pick
             self._pace()
             model, key = models[mi], self.k
             t0 = self.clock()
@@ -321,6 +372,18 @@ class Gemini:
                 if not _retryable(e):
                     raise Refused(f"Gemini refused with HTTP {code}: {e} - "
                                   f"this won't fix itself, stopping")
+                if code == 429 and budget is not None:     # out of step with Google's count: hold the key
+                    try:
+                        body = e.read().decode("utf-8", "replace")
+                    except Exception:
+                        body = ""
+                    budget.limited(key, whole_day="PerDay" in body)
+                    hits += 1
+                    with self._lock:
+                        self.rate_switches += 1
+                    self.say(f"    rate limit: key {key + 1} on {model}"
+                             + (" (daily quota gone)" if "PerDay" in body else " (held for a minute)"))
+                    continue
                 if code == 429:
                     limited += 1
                     hits += 1

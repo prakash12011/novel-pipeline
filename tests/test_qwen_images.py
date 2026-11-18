@@ -70,3 +70,18 @@ def test_sheet_prompt_is_the_book_style_on_a_plain_sheet_with_the_bible_look():
     assert text.startswith("16:9 character reference sheet on a plain, flat, light neutral gray background.")
     assert "CHARACTER: Maren Vale, tall woman, short dark hair.\n" in text
     assert KR.SHEET_LAYOUT in text and text.rstrip().endswith(KR.SHEET_END)
+
+
+def test_two_cards_split_the_pictures_alternately_and_each_makes_its_half(monkeypatch):
+    from types import SimpleNamespace
+    from novel.stages import ktrial_run as KR
+    plan = {"plates": [], "shots": [{"out": f"images/s{i:02d}.jpg", "id": f"c0001-s{i:02d}", "group": "g01"}
+                                    for i in range(1, 6)]}
+    seen = {}
+    monkeypatch.setattr(KR, "_execute", lambda run, args, plan: seen.setdefault(run, args.only) and 0)
+    args = SimpleNamespace(only=None, limit=None, reroll=False, redo=False)
+    assert KR._execute_two(["card1", "card2"], args, plan) == 0
+    assert seen == {"card1": "s01,s03,s05", "card2": "s02,s04"}
+    seen.clear()
+    assert KR._execute_two(["card1", "card2"], SimpleNamespace(only="s04", limit=None), plan) == 0
+    assert seen == {"card1": "s04"}                                              # one picture: one card

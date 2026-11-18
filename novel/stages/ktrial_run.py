@@ -44,9 +44,11 @@ import secrets
 import shutil
 import statistics
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from PIL import Image
 
@@ -252,6 +254,8 @@ def _stage_dataset(trial: Path, book: str, user: str, marker: str, args,
         session["ngrok_dataset"] = slug         # the notebook reads the token from this dataset
     if domain:
         session["domain"] = domain
+    if getattr(args, "cf_hostname", None):
+        session["cf_hostname"] = args.cf_hostname      # the named Cloudflare tunnel: ngrok's fallback, fixed address
     shutil.copy2(Path(kcomfy.__file__), st / "kcomfy.py")
     (st / "session.json").write_text(json.dumps(session, indent=1), encoding="utf-8")
     (st / marker).write_text("ktrial", encoding="utf-8")
@@ -261,25 +265,30 @@ def _stage_dataset(trial: Path, book: str, user: str, marker: str, args,
     return st, session
 
 
-def ensure_ngrok_dataset(profile: str, user: str, slug: str = "ngrok-token") -> None:
-    """The image server reads its ngrok token from the private dataset <user>/<slug>: upload kaggle/NGROK_AUTHTOKEN
-    there when the account (picked because it was free) does not have it yet. The domain stays the stored one."""
+CF_SLUG, CF_FILE = "cloudflare-tunnel", "CLOUDFLARE_TUNNEL_TOKEN"     # the named tunnel's token (images.cf_hostname)
+
+
+def ensure_ngrok_dataset(profile: str, user: str, slug: str = "ngrok-token", name: str = "NGROK_AUTHTOKEN") -> None:
+    """The image server reads a token from the private dataset <user>/<slug>: upload kaggle/<name> there when the
+    account (picked because it was free) does not have it yet. Used for the ngrok token and the Cloudflare tunnel
+    token. The ngrok domain stays the stored one."""
     from .account import kaggle_as
-    if "NGROK_AUTHTOKEN" in kaggle_as(profile, "datasets", "files", f"{user}/{slug}"):
+    if name in kaggle_as(profile, "datasets", "files", f"{user}/{slug}"):
         return
-    src = NOTEBOOK.parent / "NGROK_AUTHTOKEN"
+    src = NOTEBOOK.parent / name
     if not src.is_file():
-        sys.exit(f"{user} has no {slug} dataset and {src} is missing: add the ngrok token there")
+        sys.exit(f"{user} has no {slug} dataset and {src} is missing: add the token there")
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
-        shutil.copy2(src, Path(tmp) / "NGROK_AUTHTOKEN")
+        shutil.copy2(src, Path(tmp) / name)
         (Path(tmp) / "dataset-metadata.json").write_text(json.dumps(
             {"title": slug, "id": f"{user}/{slug}", "licenses": [{"name": "CC0-1.0"}]}), encoding="utf-8")
         print(f"uploading the ngrok token to {user}/{slug} (private): "
               + kaggle_as(profile, "datasets", "create", "-p", tmp).strip()[-160:])
 
 
-def _stage_kernel(trial: Path, book: str, user: str, tunnel: str, ngrok_dataset: str = "ngrok-token") -> Path:
+def _stage_kernel(trial: Path, book: str, user: str, tunnel: str, ngrok_dataset: str = "ngrok-token",
+                  cloudflare: bool = False) -> Path:
     kd = trial / "kaggle" / "kernel"
     kd.mkdir(parents=True, exist_ok=True)
     ks = kernel_slug(book)
@@ -291,6 +300,8 @@ def _stage_kernel(trial: Path, book: str, user: str, tunnel: str, ngrok_dataset:
     sources = [f"{user}/{dataset_slug(book)}", f"{user}/hf-token"]
     if tunnel == "ngrok":
         sources.append(f"{user}/{ngrok_dataset}")    # only the ngrok tunnel reads it
+    if cloudflare:
+        sources.append(f"{user}/{CF_SLUG}")         # the named tunnel's token
     (kd / "kernel-metadata.json").write_text(json.dumps({
         "id": f"{user}/{ks}", "title": ks, "code_file": f"{ks}.ipynb", "language": "python",
         "kernel_type": "notebook", "is_private": True, "enable_gpu": True,
@@ -312,13 +323,14 @@ def _wait_for_server(trial: Path, server: dict) -> int:
     print(f"waiting for the server at {url} (install and model download take about 10 minutes) ...", flush=True)
     tries = 0
     while True:
-        try:
-            _comfy(server, timeout=15, retries=1, backoff=0.5).ping()
-        except ComfyError as e:
-            last = str(e)
-        else:
-            print(f"the server answers at {url}")
+        live = answering(server)
+        if live is not None:
+            if live["url"] != url:
+                print("the first tunnel did not come up; the notebook opened its fallback tunnel")
+                save_server(trial, live)
+            print(f"the server answers at {live['url']}")
             return 0
+        last = "no answer"
         word, _ = _kernel_word(ref)
         if _ended(word) or word == "COMPLETE":
             print(f"the kernel is {word} and the server never answered ({last[:150]}).\n"
@@ -331,6 +343,10 @@ def _wait_for_server(trial: Path, server: dict) -> int:
         tries += 1
         if tries % 4 == 0:
             print(f"still starting, {(time.monotonic() - t0) / 60:.0f} min", flush=True)
+        if tries == 32 and server.get("tunnel", "ngrok") == "ngrok" and not server.get("fallback_url"):          # ~16 min: longer than a normal start
+            print(f"no answer on the ngrok address yet. If ngrok failed, the notebook opened a Cloudflare tunnel "
+                  f"instead: on {notebook_page(ref)} find the line `KTRIAL FALLBACK cloudflared https://...` and run "
+                  f"`novel ktrial url --chapter <N> <that address>`", flush=True)
         time.sleep(poll)
 
 
@@ -362,9 +378,14 @@ def cmd_up(args, trial: Path) -> int:
     if tunnel == "ngrok" and not getattr(args, "ngrok_dataset", None) and not getattr(args, "dry_run", False) \
             and settings.get("kaggle.pick_free", default=False):
         ensure_ngrok_dataset(profile, user)
+    cf = normalise_host(str(settings.get("images.cf_hostname", default="") or ""), "cf_hostname") \
+        if settings.get("images.cf_hostname", default=None) and tunnel == "ngrok" else None
+    if cf and not dry:
+        ensure_ngrok_dataset(profile, user, CF_SLUG, CF_FILE)
+    args.cf_hostname = cf
     marker = f"push-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}.txt"
     st, session = _stage_dataset(trial, book, user, marker, args, domain)
-    kd = _stage_kernel(trial, book, user, tunnel, session.get("ngrok_dataset") or "ngrok-token")
+    kd = _stage_kernel(trial, book, user, tunnel, session.get("ngrok_dataset") or "ngrok-token", cloudflare=bool(cf))
     print(f"staged server for {user} (profile {profile}), tunnel {tunnel}"
           + (f", domain {domain}" if domain else "") + f", model {session.get('model', kcomfy.FLUX)}")
     if dry:
@@ -387,13 +408,15 @@ def cmd_up(args, trial: Path) -> int:
     server = {"account": profile, "user": user, "kernel": f"{user}/{kernel_slug(book)}",
               "dataset": f"{user}/{dataset_slug(book)}", "comfy_user": session["user"],
               "password": session["password"], "tunnel": session["tunnel"], "pushed": marker[5:-4],
-              "url": _url_for(domain) if domain else None}
+              "url": _url_for(cf or domain) if (cf or domain) else None}
     if domain:
         server["domain"] = domain
+    if cf and domain:
+        server["fallback_url"] = _url_for(domain)      # the named Cloudflare tunnel first, ngrok second
     if session.get("model"):
         server["model"] = session["model"]
     save_server(trial, server)
-    if not domain:
+    if not server["url"]:                              # no fixed address (no ngrok domain, no Cloudflare hostname)
         print("pushed.")
         _manual_steps(server, getattr(args, "chapter", None))
         return 0
@@ -482,9 +505,12 @@ def cmd_down(args, trial: Path) -> int:
 
 # ---------------------------------------------------------------- run
 
+_LOG_LOCK = threading.Lock()          # two cards: two workers append to one log
+
+
 def _log(root: Path, entry: dict) -> None:
     root.mkdir(parents=True, exist_ok=True)
-    with open(root / "log.jsonl", "a", encoding="utf-8") as f:
+    with _LOG_LOCK, open(root / "log.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
@@ -562,6 +588,7 @@ class _Run:
         self.total = 0
         self.done = 0                           # pictures attempted, of self.total
         self.t0 = time.monotonic()
+        self.live = None                        # kqa.Live: picture QA right after each shot (cmd_run with qa)
 
     def upload(self, ref: dict) -> str:
         """Upload a reference once per run. The picture on disk is the truth: a missing one is an error."""
@@ -791,6 +818,25 @@ def cmd_charsheet(args, trial: Path) -> int:
     return 1 if run.failed else 0
 
 
+def cmd_qa(args, trial: Path) -> int:
+    """Picture QA by hand of the chapter's Qwen pictures that have no verdict yet (the same flow `novel images` runs
+    right after each picture). --status only prints the status list (<trial>/qwen-image-turbo/qa.json)."""
+    from novel import kqa
+    record = trial / kcomfy.QW_DIR / "qa.json"
+    if getattr(args, "status", False):
+        rec = _read_json(record, {}) or {}
+        print(kqa.status_table(rec) or "no status list yet")
+        print(f"{kqa.summary(rec)} ({record})" if rec else "")
+        return 0
+    plan = _read_json(trial / "plan.json")
+    server = answering(load_server(trial))
+    if not plan or server is None:
+        print("picture QA: no plan.json or no answering server for this chapter (a redraw needs the server)")
+        return 1
+    run = _Run(_comfy(server), trial, plan, kcomfy.QWEN)
+    return _qa_finish(_qa_live(args, trial, plan, run), run, plan, 0)
+
+
 def cmd_run(args, trial: Path) -> int:
     trial = Path(trial)
     plan = _read_json(trial / "plan.json")
@@ -814,18 +860,113 @@ def cmd_run(args, trial: Path) -> int:
             print("no server address recorded: run `novel ktrial up` (or `novel ktrial url ADDRESS` to store it by hand)")
             return 1
         model = server.get("model") or kcomfy.FLUX
-        comfy = _comfy(server)
-        try:
-            _comfy(server, retries=2, backoff=0.5).ping()      # a dead tunnel should not cost half a minute
-        except ComfyError as e:
-            print(f"the server at {server['url']} does not answer: {e}\n"
+        live = answering(server, retries=2)                      # a dead tunnel should not cost half a minute
+        if live is None:
+            print(f"the server at {server['url']} does not answer"
+                  + (f" (nor at {server['fallback_url']})" if server.get("fallback_url") else "") + ".\n"
                   f"Check it with `novel ktrial status`; if it has stopped, start a new one with `novel ktrial up`.")
             return 1
+        if live["url"] != server["url"]:
+            save_server(trial, live)
+        server = live
+        comfy = _comfy(server)
         run = _Run(comfy, trial, plan, model)
         if model != kcomfy.FLUX:
             info = kcomfy.model_info(model)
             print(f"model {info['model']} + {info['text_encoder']}; pictures go to {run.root}")
+        second = _second_card(server) if model == kcomfy.QWEN else None
+        live = _qa_live(args, trial, plan, run) if getattr(args, "qa", False) and model == kcomfy.QWEN else None
+        if second is not None and not plan["plates"]:
+            two = _Run(second, trial, plan, model)
+            run.live = two.live = live
+            rc = _execute_two([run, two], args, plan)
+        else:
+            run.live = live
+            rc = _execute(run, args, plan)
+        return _qa_finish(live, run, plan, rc)
     return _execute(run, args, plan)
+
+
+def _qa_item(run: _Run, s: dict) -> dict:
+    """What the picture QA gets for one shot: its id, its picture, the prompt as sent (else the plan's prompt)."""
+    out = run.root / s["out"]
+    sent = out.with_suffix(".prompt.txt")
+    brief = (sent if sent.exists() else run.trial / s["prompt"]).read_text(encoding="utf-8").strip()
+    return {"id": _short(s), "path": out, "brief": brief}
+
+
+def _qa_live(args, trial: Path, plan: dict, run: _Run):
+    """A kqa.Live for this chapter (status list: <run root>/qa.json), every shot without a verdict marked queued;
+    None (said why) without an OpenCode key or with images.qa.enabled off."""
+    from novel import kqa
+    from novel.core import settings
+    cfg = (settings.effective(getattr(args, "book", None)).get("images") or {}).get("qa") or {}
+    key = kqa.find_key()
+    if not cfg.get("enabled", True) or not key:
+        print(f"picture QA skipped ({'images.qa.enabled is off' if key else f'no {kqa.KEY_VAR} in secrets.env'})")
+        return None
+    shots = {_short(s): s for s in plan["shots"]}
+
+    def redraw(it, fix):
+        s = shots[it["id"]]
+        text = (trial / s["prompt"]).read_text(encoding="utf-8").strip() + ("\n\n" + fix if fix else "")
+        seed = _next_seed(run.root / s["out"], s["seed"], False) + 1000
+        run.make("shot", it["id"], s, text, seed, s["refs"], _stamp())
+
+    live = kqa.Live(kqa.QA(cfg, key), run.root / "qa.json", redraw)
+    live.queued([i for i, s in shots.items()
+                 if not (_valid_jpeg(run.root / s["out"]) and live.checked(_qa_item(run, s)))])
+    print(f"picture QA on: each picture is checked as soon as it is drawn; status list {run.root / 'qa.json'}")
+    return live
+
+
+def _qa_finish(live, run: _Run, plan: dict, rc: int) -> int:
+    """Check the pictures that were already there and never checked, wait for the workers, print the status."""
+    if live is None:
+        return rc
+    from novel import kqa
+    for s in plan["shots"]:
+        e = live.rec.get(_short(s)) or {}
+        if _valid_jpeg(run.root / s["out"]) and e.get("status") == "queued":
+            live.drawn(_qa_item(run, s))
+    rec = live.wait()
+    print(f"picture QA: {kqa.summary(rec)} (status list: {run.root / 'qa.json'})")
+    return rc
+
+
+def answering(server: dict, retries: int = 1) -> dict | None:
+    """The server record with the address that answers: its url (ngrok), else its fallback_url (the named Cloudflare
+    tunnel the notebook opens when ngrok fails). None when neither answers."""
+    for url in filter(None, (server.get("url"), server.get("fallback_url"))):
+        try:
+            _comfy(dict(server, url=url), timeout=15, retries=retries, backoff=0.5).ping()
+            return dict(server, url=url)
+        except ComfyError:
+            continue
+    return None
+
+
+def _second_card(server: dict) -> Comfy | None:
+    """The server's second ComfyUI (the other T4) behind <url>/g2, or None when it is not running."""
+    two = dict(server, url=server["url"].rstrip("/") + kcomfy.SECOND_PREFIX)
+    try:
+        _comfy(two, retries=0, backoff=0.5).ping()
+    except ComfyError:
+        return None
+    return _comfy(two)
+
+
+def _execute_two(runs: list, args, plan: dict) -> int:
+    """Both cards at once: the chosen pictures alternate between them, each card works through its own half."""
+    from concurrent.futures import ThreadPoolExecutor
+    shots, _ = _select(plan, getattr(args, "only", None), getattr(args, "limit", None))
+    ids = [_short(s) for s in shots]
+    halves = [h for h in (ids[0::2], ids[1::2]) if h]
+    print(f"two cards: {' + '.join(str(len(h)) for h in halves)} pictures")
+    jobs = [(r, SimpleNamespace(**{**vars(args), "only": ",".join(h), "limit": None})) for r, h in zip(runs, halves)]
+    with ThreadPoolExecutor(len(jobs)) as pool:
+        codes = [f.result() for f in [pool.submit(_execute, r, a, plan) for r, a in jobs]]
+    return max(codes, default=0)
 
 
 def _execute(run: _Run, args, plan: dict) -> int:
@@ -877,16 +1018,22 @@ def _execute(run: _Run, args, plan: dict) -> int:
                 continue
             out = root / s["out"]
             seed = _next_seed(out, s["seed"], reroll) if reroll or redo else int(s["seed"])
+            if run.live:
+                run.live.drawing(ident)
             try:
                 text = (run.trial / s["prompt"]).read_text(encoding="utf-8").strip()
                 meta = run.make("shot", ident, s, text, seed, s["refs"], stamp if reroll or redo else None)
             except RUN_ERRORS as e:
+                if run.live:
+                    run.live.set(ident, "draw_failed", error=str(e)[:300])
                 fails = _failed(run, "shot", ident, e, fails)
                 if fails >= MAX_FAILS_IN_ROW:
                     return _stop_after_failures(run)
                 continue
             fails = 0
             run.progress(ident, meta)
+            if run.live:
+                run.live.drawn(_qa_item(run, s))
     except _BudgetStop as e:
         print(f"  {e}")
         run.summary()

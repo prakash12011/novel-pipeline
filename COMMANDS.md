@@ -906,6 +906,9 @@ Checks this PC (Python, packages, Node, ffmpeg, Chrome, Kaggle, keys, fonts) and
 ### novel use
 `novel use BOOK [--ep N]`: chooses the current book and episode.
 
+### novel quota
+`novel quota`: how many free-tier Gemini calls each key has made today and in the last minute (counted in `<novel home>/gemini_usage.json`, see `gemini.free_tier` in docs/settings.md). When every key has used its day, Gemini calls go to OpenRouter until midnight Pacific.
+
 ### novel new
 `novel new [SLUG] [--slug S] [--title T] [--author A] [--series-label L] [--chapters-per-episode N] [--flow-project URL] [--flow-model M] [--voice V] [--kaggle-profile P] [--disclaimer-text T] [--yes]`: starts a new book. Every question has an option; `--yes` accepts the default for the rest.
 
@@ -964,6 +967,10 @@ Checks this PC (Python, packages, Node, ffmpeg, Chrome, Kaggle, keys, fonts) and
 
 ### novel ktrial
 The image server and the per-chapter work folder behind `novel images` (Qwen), also usable by hand for experiments (FLUX.3 klein, MiniMax-H3, Qwen). Everything is written to `<book>/_work/ktrial/cNNNN/`; only `charsheet` writes to the bible (`bible\qwen\`).
+- Picture QA: in `novel images` (Qwen) every picture is checked through OpenCode Go (`OPENCODE_API_KEY` in secrets.env) as soon as it is drawn, while the next one is drawn: the panel (Claude Haiku 5.5 + Qwen4 Max) checks it; any fail goes to the referee (Gemini 4 Argon), who keeps it or lists every problem; the picture is then redrawn at once with those fixes and the referee checks the redraw. The status list is `qa.json` next to the pictures (copied into the episode with them), updated at every step: each picture's state (`queued`, `drawing`, `checking`, `redrawing`, `rechecking`, then `pass`, `kept`, `fixed`, `failed`, `unchecked` or `draw_failed`), its tries (1, or 2 after a redraw) and what QA found. `novel images --no-qa` skips it for one run; `images.qa.enabled: false` turns it off.
+- `novel ktrial qa --chapter N [--status]`: `--status` prints the status list (one line per picture: state, tries, what QA found). Without it: the picture QA by hand of the pictures that have no verdict yet (needs the server, for redraws).
+- `novel ktrial qa-probe --chapter N [--picture FILE]`: sends one picture to every configured QA model and shows which answer.
+- `novel ktrial front --chapter N [--keys a,b] [--redo]`: one detailed front view per character (default: everyone with a Qwen sheet) into `<book>\bible\qwen\front\<key>_front.jpg`, 1088x1472, each with its own seed. Characters without a `face` line first get one from Gemini (face shape, nose, brows, build, age marks, a resting expression), 8 per call so the faces differ; a reworded bible look is printed. No picture QA: character pictures are a manual step, checked by eye. (`--chapter` only names the folder whose server is used.)
 - `novel ktrial charsheet --chapter N [--keys a,b] [--missing]`: makes Qwen character sheets on the running Qwen server (`--keys`: these bible keys; `--missing`: every referenced person of chapter N without a sheet). Text only, from the bible look, seed 202, into `<book>\bible\qwen\<key>_sheet_seed202.jpg` (+ `manifest.json`).
 - `novel ktrial scenes --chapter N [--book B] [--ep E] [--max-characters 2] [--from-production] [--force]`: asks Gemini for the chapter's picture lines with the close-framing rules. `--from-production` copies the existing scene file instead.
 - `novel ktrial prompts --chapter N`: writes the prompts, the place-plate prompts, the character references and `plan.json`. No GPU.

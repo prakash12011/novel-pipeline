@@ -771,12 +771,18 @@ _HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
         "transfer-encoding", "upgrade", "host", "authorization", "content-length"}
 
 
-def serve_auth_proxy(port: int, upstream: str, user: str, password: str, host: str = "127.0.0.1"):
+SECOND_PREFIX = "/g2"            # the second ComfyUI (the other T4), behind the same proxy and tunnel
+
+
+def serve_auth_proxy(port: int, upstream: str, user: str, password: str, host: str = "127.0.0.1",
+                     routes: dict | None = None):
     """Start a threaded reverse proxy on host:port that demands HTTP basic auth and forwards to `upstream`
     (e.g. http://127.0.0.1:8188). The tunnel (ngrok or cloudflared) points at this, so auth does not depend on
     the tunnel's plan. Returns the server; `server.last_request` is the time.time() of the last authorised
     request, `server.shutdown()` stops it. Runs in a daemon thread."""
     up = urllib.parse.urlsplit(upstream)
+    # routes: {"/g2": "http://127.0.0.1:8190"}: a request under the prefix goes there, with the prefix taken off
+    extra = {pre.rstrip("/"): urllib.parse.urlsplit(u) for pre, u in (routes or {}).items()}
     want = "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
 
     class Handler(BaseHTTPRequestHandler):
@@ -801,9 +807,16 @@ def serve_auth_proxy(port: int, upstream: str, user: str, password: str, host: s
             # ComfyUI checks Origin against Host for browser requests; drop Origin, we are not a browser.
             hdrs.pop("Origin", None)
             hdrs.pop("origin", None)
+            target, path = up, self.path
+            for pre, u in extra.items():
+                if path == pre or path.startswith(pre + "/") or path.startswith(pre + "?"):
+                    target, path = u, path[len(pre):] or "/"
+                    if path.startswith("?"):
+                        path = "/" + path
+                    break
             try:
-                conn = http.client.HTTPConnection(up.hostname, up.port or 80, timeout=600)
-                conn.request(self.command, self.path, body=body, headers=hdrs)
+                conn = http.client.HTTPConnection(target.hostname, target.port or 80, timeout=600)
+                conn.request(self.command, path, body=body, headers=hdrs)
                 r = conn.getresponse()
                 data = r.read()
                 status, rh = r.status, r.getheaders()

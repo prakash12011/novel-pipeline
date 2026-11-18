@@ -762,4 +762,6 @@ QWEN_NOTE = (
     "that narrate the telling itself (listeners, laughter, replies, drinks, introductions, the opening and the end) "
     "are drawn in the telling room. "
     "\"action\": name the spot inside the place, and one thing in the foreground or background that makes this "
-    "picture different from the previous one.")
+    "picture different from the previous one. \"action\" and \"others\" never name a person of the bible who is not "
+    "in the cast: someone who must be seen is in the cast, everyone else is left out of the words (the image model "
+    "draws a named person it has no reference for with a cast member's face).")
