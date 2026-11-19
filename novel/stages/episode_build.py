@@ -1,8 +1,9 @@
 """Build an episode video: every chapter rendered (with English subtitles), then joined behind the
 copyright disclaimer, with chapter markers and timestamps. Driven by `novel build` (commands/build_cmd.py).
 
-A chapter is rendered again only when it has no video yet, its video has no subtitles,
-its last render failed a check, its logo settings changed, or its text, narration, timing,
+A chapter is rendered again only when it has no video yet, its last render failed a check,
+its subtitles setting (video.captions.enabled) changed, its logo settings, title font or video style
+(video.style) changed, or its text, narration, timing,
 scenes, captions, hd pictures or (images.watermark: remove) clean pictures changed after the render, or its
 images.watermark setting changed. Everything else is reused, so
 re-running after a fix is cheap.
@@ -41,17 +42,19 @@ def why_render(ep_root: Path, n: int) -> str | None:
     if not rep.exists():
         return "no render report"
     r = json.loads(rep.read_text(encoding="utf-8"))
-    if not r.get("captions"):
-        return "no subtitles"
     if not r.get("pass"):
         return "last render failed a check"
     from .episode_video import DEFAULT_TITLE_FONT, logo_signature
     ep = E.info(ep_root)["episode"]
+    if bool(r.get("captions")) != captions_on(ep, n):          # subtitles switched on or off since the render
+        return "subtitles setting changed"
     if r.get("logo") != logo_signature(E.cfg(ep, n)["video"]["logo"]):   # old reports have no key: None
         return "logo settings changed"
     from .episode_video import title_font_setting
     if r.get("title_font", DEFAULT_TITLE_FONT) != title_font_setting(E.cfg(ep, n)):    # old reports: the default
         return "title font setting changed"
+    if r.get("style", "kenburns") != E.video_style(E.cfg(ep, n)):              # old reports: kenburns
+        return "video style changed"
     from .episode_clean import mode_for
     wm = mode_for(ep_root, n)
     if r.get("watermark", "crop") != wm:                                      # old reports: crop, today's way
@@ -76,9 +79,14 @@ def why_render(ep_root: Path, n: int) -> str | None:
 # ------------------------------------------------------------------ the inputs a render needs
 
 
-def captions_on(ep: int, n: int) -> bool:
-    """video.captions.enabled for this chapter (default on)."""
-    return ((E.cfg(ep, n).get("video") or {}).get("captions") or {}).get("enabled", True) is not False
+def captions_on(ep: int, n: int, style: str | None = None) -> bool:
+    """Whether chapter n gets captions (default on). The panels style letters them inside the panels and has
+    its own switch, video.panels.captions; the other style burns subtitles at the bottom, video.captions.enabled.
+    style: None = the setting (video.style)."""
+    video = E.cfg(ep, n).get("video") or {}
+    if (style or E.video_style(E.cfg(ep, n))) == "panels":
+        return (video.get("panels") or {}).get("captions", True) is not False
+    return (video.get("captions") or {}).get("enabled", True) is not False
 
 
 def _item(kind: str, what: str, fix: str) -> dict:

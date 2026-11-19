@@ -3,6 +3,8 @@
     FAKE_KAGGLE_STATE            folder holding the fake's datasets and kernels (required)
     FAKE_KAGGLE_RUNNING_POLLS=N  `kernels status` says RUNNING for the first N polls after a push
     FAKE_KAGGLE_ERROR=a|b|c      the kernel ends in ERROR; `kernels logs` shows these lines
+    FAKE_KAGGLE_EXTRA_LOG=a|b|c  `kernels logs` also shows these lines (the ktrial server's `KTRIAL URL ...`)
+    FAKE_KAGGLE_EMPTY_LOG_WHILE_RUNNING=1  `kernels logs` is empty while the kernel is RUNNING (the real service does this)
     FAKE_KAGGLE_HASH_MISMATCH=1  the run reports a different hash for every narrated text
     FAKE_KAGGLE_CALLS=<file>     append one line per call (to prove what was invoked)
 
@@ -119,7 +121,7 @@ def kernels(sub: str, args: list[str]) -> None:
         if not (src / meta["code_file"]).exists():
             die("code_file is missing from the kernel folder")
         for ds in meta["dataset_sources"]:
-            if ds.endswith("/hf-token") or ds_dir(ds).exists():
+            if ds.endswith(("/hf-token", "/ngrok-token", "/cloudflare-tunnel", "/cloudflare-tunnel-2")) or ds_dir(ds).exists():
                 continue
             die(f"403 Forbidden: dataset {ds} not found")
         write_json(kernel_file(meta["id"]), {"polls": 0, "sources": meta["dataset_sources"]})
@@ -140,6 +142,10 @@ def kernels(sub: str, args: list[str]) -> None:
         print(f'{ref} has status "KernelWorkerStatus.{word}"')
         return
     if sub == "logs":
+        if os.environ.get("FAKE_KAGGLE_EMPTY_LOG_WHILE_RUNNING") and k["polls"] <= int(
+                os.environ.get("FAKE_KAGGLE_RUNNING_POLLS", "0")):
+            print("[]")
+            return
         lines = ["[maya2] voice and model read from config.yaml", "venv built in 0.0 min"]
         cfg = staged_dataset(k) / "config.yaml"
         if cfg.exists():
@@ -147,6 +153,7 @@ def kernels(sub: str, args: list[str]) -> None:
             m = yaml.safe_load(cfg.read_text(encoding="utf-8"))["tts"]["maya2"]
             lines.append(f"[maya2] voice={m['voice']} model={m['model_id']}")
         lines += errors if errors else ["probe 5.0s audio in 5.0s  RTF 1.00", "  spoke  done"]
+        lines += [l for l in os.environ.get("FAKE_KAGGLE_EXTRA_LOG", "").split("|") if l]
         print(json.dumps([{"stream_name": "stdout", "time": 0.0, "data": l + "\n"} for l in lines]))
         return
     if sub == "output":
@@ -169,7 +176,7 @@ def kernels(sub: str, args: list[str]) -> None:
 
 
 def staged_dataset(k: dict) -> Path:
-    ref = next(s for s in k["sources"] if not s.endswith("/hf-token"))
+    ref = next(s for s in k["sources"] if not s.endswith(("/hf-token", "/ngrok-token")))
     return ds_dir(ref)
 
 

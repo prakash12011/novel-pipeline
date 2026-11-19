@@ -5,6 +5,7 @@ secrets.env
 *.token
 access_token*
 HF_TOKEN*
+NGROK_AUTHTOKEN*
 kaggle.json
 .kaggle-profiles.json
 node_modules/
@@ -12,3 +13,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 data/
+
+# Tailscale auth key for the Kaggle LLM experiment (secret)
+kaggle/TAILSCALE_AUTHKEY
+CLOUDFLARE_TUNNEL_TOKEN*

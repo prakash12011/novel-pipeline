@@ -149,7 +149,7 @@ def set_hd(mode):
     """video.hd.enabled for the book (and a fast disclaimer card)."""
     write_yaml(paths.book_dir(BOOK) / "book.yaml",
                {"book": {"title": "Demo Tale", "author": "A. Writer"},
-                "video": {"hd": {"enabled": mode}, "disclaimer": {"seconds": 1.0}}})
+                "video": {"style": "kenburns", "hd": {"enabled": mode}, "disclaimer": {"seconds": 1.0}}})   # not about the style
 
 
 @pytest.fixture(scope="module")
@@ -313,3 +313,81 @@ def test_hd_plan(monkeypatch, tmp_path):
     model.with_suffix(".bin").write_bytes(b"x")
     ok = H.hd_plan(cfg("auto"))
     assert ok["run"] is True and ok["note"] == "" and H.hd_plan(cfg(True))["run"] is True
+
+
+# ------------------------------------------------------------------ the comic-panels style
+
+
+PAPER = (243, 240, 232)
+
+
+def frame_pixel(mp4: Path, t: float, x: int, y: int, tmp: Path) -> tuple[int, int, int]:
+    """The RGB of one pixel of the frame at t seconds (decoded by ffmpeg)."""
+    from PIL import Image
+    png = tmp / f"{mp4.stem}-{t}.png"
+    ff("-ss", t, "-i", mp4, "-frames:v", "1", png)
+    with Image.open(png) as im:
+        return im.convert("RGB").getpixel((x, y))
+
+
+def test_panels_preview_and_default_style_side_by_side(world, capsys, tmp_path):
+    """--style panels writes c0001-first6s-panels.mp4 (the setting is kenburns, so the name carries the style)
+    and leaves the real preview alone; the default style's report now says kenburns."""
+    from novel.commands import render_cmd
+    set_hd(False)
+    root = E.root(1)
+    vid = root / "video"
+    rc = render_cmd.main(["--book", BOOK, "--ep", "1", "--chapter", "1", "--end", "6", "--no-captions"])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    plain = vid / "c0001-first6s.mp4"
+    rep = json.loads(plain.with_suffix(".render.json").read_text(encoding="utf-8"))
+    assert rep["style"] == "kenburns" and "panels" not in rep and rep["pass"] is True
+    before = (plain.stat().st_mtime_ns, plain.stat().st_size)
+
+    rc = render_cmd.main(["--book", BOOK, "--ep", "1", "--chapter", "1", "--end", "6", "--style", "panels",
+                          "--no-captions"])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    mp4 = vid / "c0001-first6s-panels.mp4"
+    assert mp4.exists() and "result: PASS" in out and str(mp4) in out
+    assert abs(duration(mp4) - 6.0) < 0.1
+    rep = json.loads(mp4.with_suffix(".render.json").read_text(encoding="utf-8"))
+    assert rep["pass"] is True and rep["style"] == "panels" and rep["captions"] is False
+    assert (rep["width"], rep["height"]) == (1920, 1080) and rep["file"] == mp4.name
+    assert rep["panels"] == 3 and rep["pages"] >= 1 and rep["views"] == 3 and rep["images"] == 3
+    assert (plain.stat().st_mtime_ns, plain.stat().st_size) == before          # the real preview was not touched
+    # top centre is page margin above the first row: paper (H.264 is lossy, so a small tolerance)
+    px = frame_pixel(mp4, 3.5, 960, 15, tmp_path)
+    assert all(abs(a - b) <= 8 for a, b in zip(px, PAPER)), px
+
+
+def test_panels_page_pictures_make_no_video(world, capsys):
+    from novel.commands import render_cmd
+    set_hd(False)
+    vid = E.root(1) / "video"
+    before = {p.name: (p.stat().st_mtime_ns, p.stat().st_size) for p in vid.glob("*.mp4")}
+    assert before                                           # the previews of the tests above
+    rc = render_cmd.main(["--book", BOOK, "--ep", "1", "--chapter", "1", "--pages"])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    page = vid / "c0001-pages" / "p01.jpg"
+    assert page.exists() and page.stat().st_size > 1000 and "p01.jpg" in out and "c0001-pages" in out
+    assert {p.name: (p.stat().st_mtime_ns, p.stat().st_size) for p in vid.glob("*.mp4")} == before
+
+
+def test_an_unknown_style_is_refused(world, capsys):
+    from novel.commands import render_cmd
+    from novel.stages import episode_render
+    set_hd(False)
+    with pytest.raises(SystemExit):                          # argparse: not one of the choices
+        render_cmd.main(["--book", BOOK, "--ep", "1", "--chapter", "1", "--style", "comic"])
+    assert "comic" in capsys.readouterr().err
+    with pytest.raises(SystemExit, match="style 'comic': use kenburns or panels"):
+        episode_render.render(1, 1, "20", "fast", 1, 2.0, style="comic")
+
+
+def test_shape_names_agree_between_the_panel_modules():
+    from novel.stages import episode_panels, episode_scenes
+    # a scene may still name a switched-off shape; it is drawn as landscape (SWITCHED_OFF)
+    assert set(episode_panels.SHAPES) | set(episode_panels.SWITCHED_OFF) == set(episode_scenes.PANEL_SHAPES)

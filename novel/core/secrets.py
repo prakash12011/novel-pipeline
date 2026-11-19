@@ -21,4 +21,5 @@ def load() -> dict[str, str]:
 
 def gemini_keys() -> list[str]:
     s = load()
-    return [s[k] for k in sorted(s) if k.startswith("GEMINI_API_KEY") and s[k]]
+    # GEMINI_API_KEY_FOR_HYDROGEN (the user's key for gemini-4-hydrogen) first; the others stay as rate-limit fallbacks
+    return [s[k] for k in sorted(s, key=lambda k: ("HYDROGEN" not in k, k)) if k.startswith("GEMINI_API_KEY") and s[k]]

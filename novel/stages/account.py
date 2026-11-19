@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -121,6 +122,43 @@ def resolve_profile(cli_name=None) -> str:
         sys.exit("no Kaggle account chosen: pass --account NAME, or set tts.kaggle_profile "
                  "(or kaggle.account) in settings.yaml")
     return str(name)
+
+
+def kaggle_as(profile: str, *args: str, timeout: int = 180) -> str:
+    """One Kaggle CLI call as `profile` without switching the active login: its token goes in KAGGLE_API_TOKEN and
+    an empty config folder, so ~/.kaggle/access_token (what a running job may be using) is never touched."""
+    import subprocess
+    import tempfile
+    from .kbatch import kaggle_cmd, kaggle_home
+    token = (kaggle_home() / f"access_token-{profile}").read_text(encoding="utf-8").strip()
+    with tempfile.TemporaryDirectory() as tmp:
+        env = dict(os.environ, KAGGLE_API_TOKEN=token, KAGGLE_CONFIG_DIR=tmp, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+        p = subprocess.run([*kaggle_cmd(), *args], env=env, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout)
+    return (p.stdout or "") + (p.stderr or "")
+
+
+def running_kernels(profile: str) -> list[str]:
+    """The account's notebooks that are running or queued now: any of them holds its GPU."""
+    listing = kaggle_as(profile, "kernels", "list", "--mine", "--csv", "--page-size", "50")
+    refs = [line.split(",")[0] for line in listing.splitlines()[1:] if "/" in line.split(",")[0]]
+    return [r for r in refs if re.search(r"RUNNING|QUEUED", kaggle_as(profile, "kernels", "status", r), re.I)]
+
+
+def free_profile(prefer: str | None = None, say=print, skip=()) -> str:
+    """With kaggle.pick_free: the first Kaggle account with nothing running, `prefer` first, then the accounts of
+    settings kaggle.profiles in order (two jobs never share an account's GPU), never one in `skip`. Without it:
+    resolve_profile(prefer)."""
+    from novel.core import settings
+    if not settings.get("kaggle.pick_free", default=False):
+        return resolve_profile(prefer)
+    names = [n for n in load_profiles()["profiles"] if n not in skip]
+    for name in ([prefer] if prefer in names else []) + [n for n in names if n != prefer]:
+        busy = running_kernels(name)
+        say(f"Kaggle account {name}: " + (f"busy ({', '.join(busy)})" if busy else "free"))
+        if not busy:
+            return name
+    sys.exit("every Kaggle account is busy: wait for one to finish, or pass --account NAME")
 
 
 def owner(profile: str) -> str:

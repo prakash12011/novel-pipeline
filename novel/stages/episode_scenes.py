@@ -32,7 +32,18 @@ from pathlib import Path
 
 from . import episode as E
 from .episode_translate import parse_range
+from .heading import body_start, heading_of
 from .scenebuild import paragraphs
+
+
+def chapter_title(ep_root: Path, n: int) -> str:
+    """The chapter's title from manifest.json (for texts without a heading line)."""
+    from .manifest import Manifest
+    try:
+        man = Manifest.load(Path(ep_root) / "manifest.json")
+        return next((c.title for c in man.chapters if c.idx == n), f"Chapter {n}")
+    except (OSError, ValueError):
+        return f"Chapter {n}"
 
 SCENES_PER_CHAPTER = 22      # legacy pacing (chapters 1-2): 22 equal windows, ~13 s an image
 PACING = "7s"                # current pacing: written into every new scene file
@@ -45,6 +56,8 @@ SHOTS = ("establishing", "wide", "medium", "close-up", "over-the-shoulder",
          "low-angle", "high-angle", "detail")
 # Scene files v2 (written by `novel import`): no close-up (Flow filled the frame with a face).
 SHOTS_V2 = ("wide", "establishing", "medium", "over-the-shoulder", "low-angle", "high-angle", "detail")
+# Comic-panel shapes a scene may ask for with an optional "panel" key (video.style: panels).
+PANEL_SHAPES = ("wide", "landscape", "square", "portrait", "tall")
 # Image prompts never ask for these. The book has violence; the pictures show
 # its moment, not its gore.
 BANNED = re.compile(r"(?i)\b(nude|naked|nudity|sex|sexual|breasts?|lingerie|underwear|"
@@ -82,11 +95,11 @@ FOOTER = ("Keep every attached character exactly like their reference: same face
 def windows(paras: list[str], n: int = SCENES_PER_CHAPTER) -> list[tuple[int, int]]:
     """n runs of consecutive paragraphs, 1..len-1, of about equal character length.
 
-    Paragraph 0 is the chapter title and belongs to the title card. Returns
+    Paragraph 0 is skipped when it is the chapter heading (older chapters; heading.body_start). Returns
     inclusive (first, last) paragraph numbers. Fewer than n windows only when
     the chapter has fewer than n body paragraphs.
     """
-    body = list(range(1, len(paras)))
+    body = list(range(body_start(paras), len(paras)))
     n = min(n, len(body))
     total = sum(len(paras[i]) for i in body)
     out, start, acc = [], body[0], 0
@@ -131,7 +144,7 @@ def paced_windows(paras: list[str]) -> list[tuple[int, int, int, int]]:
     """
     limit = PACED_SECONDS * CHARS_PER_SECOND
     out: list[tuple[int, int, int, int]] = []
-    for i in range(1, len(paras)):
+    for i in range(body_start(paras), len(paras)):
         n = len(paras[i])
         k = max(1, -(-n // int(limit)))          # ceil
         if k == 1 and out:
@@ -243,6 +256,8 @@ def check_chapter(ep_root: Path, n: int) -> list[str]:
         if not (isinstance(focus, list) and len(focus) == 2
                 and all(isinstance(f, (int, float)) and 0 <= f <= 1 for f in focus)):
             problems.append(f"{tag}: focus must be [x, y] between 0 and 1")
+        if "panel" in s and s["panel"] not in PANEL_SHAPES:
+            problems.append(f"{tag}: panel {s['panel']!r} not one of {PANEL_SHAPES}")
     return problems
 
 
@@ -320,7 +335,7 @@ def cmd_brief(args) -> None:
     lock = json.loads(E.lock_path(ep_root).read_text(encoding="utf-8"))
     lines = [f"# Chapter {args.chapter}: scene brief",
              f"hindi_sha256: {lock[f'{args.chapter:05d}.txt']}", "",
-             "Roster keys: " + ", ".join(roster), "", f"Title: {paras[0]}", ""]
+             "Roster keys: " + ", ".join(roster), "", f"Title: {heading_of(paras) or chapter_title(ep_root, args.chapter)}", ""]
     existing = scenes_path(ep_root, args.chapter)
     pacing = PACING
     if existing.exists():
@@ -432,7 +447,7 @@ figure{{margin:0;background:#1c1c1c;border-radius:6px;overflow:hidden}}
 img{{width:100%;display:block;aspect-ratio:16/9;object-fit:cover}}
 .missing{{aspect-ratio:16/9;display:grid;place-items:center;color:#f88}}
 figcaption{{padding:8px 10px}} p{{margin:6px 0}} .hi{{color:#9a9}}</style>
-<h1>Chapter {n}: {html.escape(paras[0])}</h1><main>{''.join(cards)}</main>"""
+<h1>Chapter {n}: {html.escape(heading_of(paras) or chapter_title(ep_root, n))}</h1><main>{''.join(cards)}</main>"""
     out = img_dir / "contact.html"
     out.write_text(page, encoding="utf-8")
     print(f"open {out.resolve()}")
@@ -502,7 +517,7 @@ def writer_prompts(ep_root: Path, n: int) -> tuple[str, str, list]:
         n=len(wins), shots=", ".join(SHOTS), roster="\n".join(lines),
         outfits=("\nOUTFITS IN THIS CHAPTER\n" + "\n".join(outfit_lines) + "\n") if outfit_lines and OUTFITS_IN_PROMPTS else "",
         flag=(f"\nCONTENT NOTE FOR THIS CHAPTER: {flag}\n") if flag else "")
-    msg = [f"Chapter {n}. Title: {paras[0]}", ""]
+    msg = [f"Chapter {n}. Title: {heading_of(paras) or chapter_title(ep_root, n)}", ""]
     for k, w in enumerate(wins, 1):
         a, sa, b, eb = w
         part = ""

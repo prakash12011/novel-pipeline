@@ -292,12 +292,18 @@ HINDI_KIND = "  HINDI c{ex4}     -> inbox/c{ex4}.hindi.txt      (4-digit chapter
 HINDI_PLAIN = " The HINDI block is plain text, not in a code fence."
 
 PART_A_FULL_TEXT = """PART A - THE NARRATION (HINDI block)
-- Retell the chapter as a Hinglish narration for friends and family. Write the narration as a detailed recap of about
-  {target} Hindi words (between {low} and {high} words). Leave out character descriptions (looks, clothes, background
+- Retell the chapter as a Hinglish narration for friends and family, as a detailed recap. THE LENGTH IS A HARD LIMIT:
+  the whole narration has at most {high} Hindi words (aim for about {target}, and at least {low}). A narration over
+  {high} words is rejected and has to be written again, so count as you go and stop adding detail before you reach
+  {high}. Leave out character descriptions (looks, clothes, background
   about who someone is) and other side information that does not move the story; keep every plot event, decision,
   reveal, clue and line of dialogue that matters. Action scenes stay detailed: tell them move by move, in order. Add
   nothing that is not in the chapter.
 - Cut repeated inner thoughts and filler.
+- Open by setting the scene: where and when it is, who is there (by name) and what is going on, before the first
+  event.
+- A story, memory or rumour a character tells is retold in full, beat by beat, one event per sentence, in the order
+  it is told: never squeezed into one summary line. The talk around it (questions, jokes, introductions) stays short.
 - ACTION SCENES (fights, chases, traps, escapes, powers in use): never summarise. Tell them blow by blow, as if live:
   where everyone stands, what each does next and why, which weapon, trick or power, how the enemy reacts, near misses,
   what goes wrong and exactly how it ends. One move per sentence, in order. These parts get the most words.
@@ -309,15 +315,16 @@ PART_A_FULL_TEXT = """PART A - THE NARRATION (HINDI block)
 - Numbers as Hindi words (तीन दिन), never digits. Devanagari only: no Latin letters at all.
 - Names exactly as in the NAMES list. A new name: spell it as it sounds, add it to the BIBLE as a "name" line,
   and keep that spelling everywhere.
-- First line: चैप्टर <chapter number in Hindi words>: <title in Hinglish>. No other headings, notes or summaries.
+- No heading line: never write the chapter number or the chapter title; start straight with the story. No
+  headings, notes or summaries.
 - End each chapter on a small hook.
 """
 
-PICTURE_MARKERS = """- PICTURE MARKERS: put {1}, {2}, {3} ... in the text where a new picture starts. The first paragraph after the
-  heading starts with {1}. Put a new marker whenever what we should SEE changes (new place, new person acting or
+PICTURE_MARKERS = """- PICTURE MARKERS: put {1}, {2}, {3} ... in the text where a new picture starts. The first paragraph starts
+  with {1}. Put a new marker whenever what we should SEE changes (new place, new person acting or
   speaking, new action, a jump in time), and at the latest every two sentences (about {paced} seconds, ~{chars} letters).
   A marker always stands at the start of a sentence, never inside one, never two in a row. Numbers run from 1 in
-  every chapter with no gaps. The heading line has no marker.
+  every chapter with no gaps.
 """
 
 PART_A_FULL = PART_A_FULL_TEXT + PICTURE_MARKERS
@@ -349,8 +356,11 @@ Rules:
   cave, tent or vehicle, and "outdoor" when it stands in the open (street, yard, field, roof, shore). Decide it for
   each group from the narration of that moment, NOT from the location's kind: one location can have both an inside and
   an outside (a house and its yard). A doorway or a window view is whichever side the camera stands on. "time" says
-  when it happens. "light" must agree with both: no sunlight at night; no moon or stars indoors unless a window is
-  mentioned; by day outdoors the light is the sky, not lamps.
+  when it happens: decide day or night from the narration for every group (a morning at home is "day" even right after
+  a night scene). "light" must agree with both: no sunlight at night; no moon or stars indoors unless a window is
+  mentioned; by day outdoors the light is the sky, not lamps. A dream place has its own light, whatever the time
+  in the waking world (for example a sky of thick white fog with no sun, dim as a starlit night): write "night" there
+  and the light the novel gives that place.
 - "present" (group): EVERY named character who is in this place during the group, by key, listed first. It is required
   and not empty, unless the group truly has nobody (an empty street): then it is [] and every image of the group has
   an empty cast.
@@ -378,6 +388,61 @@ Rules:
   of the fight identical inside the group: the same person stays on the same side unless the text moves them.
 - "focus": where the main subject is, [0..1, 0..1] from the top-left.
 """
+
+
+def _swap(text: str, old: str, new: str) -> str:
+    """text with `old` replaced by `new`; asserts `old` is there, so a later edit of PART_B cannot silently
+    break a variant built from it."""
+    assert old in text, f"PART_B changed: cannot find {old[:50]!r} to swap"
+    return text.replace(old, new)
+
+
+def _tight_part_b(part_b: str) -> str:
+    """PART_B for an image model that does better with a close camera and at most two people (framing "tight"):
+    only the cast, position, shot and action bullets change; the schema lines and field names stay the same."""
+    part_b = _swap(
+        part_b,
+        '''Someone only
+  mentioned, remembered or heard is not in the picture. Fewer people is better: show who the moment is about. A
+  window in which nobody is visible (a description of a place, an object, a letter) gets an empty cast [] and an
+  "establishing" or "detail" shot.''',
+        '''Someone only
+  mentioned, remembered or heard is not in the picture. The camera is CLOSE in this series: one person per picture is
+  best, two only when the moment is between those two; show who the moment is about. Never a crowd: anyone else goes in
+  "others", as blurred background at most. A window in which nobody is visible (a description of a place, an object, a
+  letter) gets an empty cast [] and an "establishing" or "detail" shot.''')
+    part_b = _swap(
+        part_b,
+        '''- "position" (each cast member): where that person is in the frame and in the place, in plain words: "left foreground,
+  by the door", "centre, seated at the table", "far right, in the background". Required. Two people in one picture
+  never share a position, and the positions stay the same inside a group unless the narration moves someone.''',
+        '''- "position" (each cast member): where that person is in the FRAME only, in plain words: "left", "centre" or "right",
+  plus "in front" or "behind" when two people overlap in depth. Required. Two people in one picture never share a
+  position, and each person keeps their side inside a group unless the narration moves them.''')
+    part_b = _swap(
+        part_b,
+        '''- "shot": one of wide, establishing, medium, over-the-shoulder, low-angle, high-angle, detail. Inside a group, change
+  the camera between images; never the same shot three times in a row; "medium" for at most a third.''',
+        '''- "shot": one of wide, establishing, medium, over-the-shoulder, low-angle, high-angle, detail. The camera stays close.
+  "medium" is one or two people from the waist up and is the normal shot. "over-the-shoulder" is two people from the
+  chest up, one of them seen from behind. "low-angle" and "high-angle" are one person from the knees up. "detail" is an
+  OBJECT ALONE: its cast is empty [], and no person and no hand is in the picture; when a person holds or uses the
+  object, use "medium" instead. "wide" and "establishing" are ONLY for a window with an empty cast, or for the first
+  image of a group. Inside a group, change the camera between images; never the same shot three times in a row.''')
+    return _swap(
+        part_b,
+        '''- "action": English. What is VISIBLE at that moment: who does what, where, with what expression, using display
+  names, never keys. Do not describe characters' clothes or faces. Cards, letters, books and signs show no readable
+  words. Family-friendly: violence is the threat, the swing, the impact or a silhouette, never wounds; never the
+  words {BANNED}. Everyone fully clothed.''',
+        '''- "action": English. What is VISIBLE at that moment: who does what, where, with what expression, using display names,
+  never keys. Name the spot inside the place where this picture happens (by the oven, at the doorway, beside the fallen
+  pillar): the image model is told nothing else about where people stand. Do not describe characters' clothes or faces.
+  Cards, letters, books and signs show no readable words. Family-friendly: violence is the threat, the swing, the
+  impact or a silhouette, never wounds; never the words {BANNED}. Everyone fully clothed.''')
+
+
+PART_B_TIGHT = _tight_part_b(PART_B)
 
 FIRST_RULE_FULL = ("Exactly one image line for every marker ({1}, {2}, ...) in the HINDI block, same numbers.")
 FIRST_RULE_SCENES = "Exactly one image line for every window, same numbers."
@@ -435,9 +500,24 @@ EXAMPLE_IMAGE = {
 }
 
 
-def example_block() -> str:
+# The same moment with a close camera: positions are sides of the frame and the action names the spot.
+EXAMPLE_IMAGE_TIGHT = {
+    **EXAMPLE_IMAGE, "shot": "medium",
+    "cast": [
+        {**EXAMPLE_IMAGE["cast"][0], "position": "left"},
+        {**EXAMPLE_IMAGE["cast"][1], "position": "right"},
+    ],
+    "action": ("Maren stands behind the fruit stall, beside the scale, while Tobias leans toward her across a crate "
+               "of apples and points at it with one finger, asking a question. Gulls circle above the harbour wall "
+               "and the low sun lights the scene from the left."),
+}
+FRAMINGS = ("wide", "tight")
+
+
+def example_block(framing: str = "wide") -> str:
     g = json.dumps(EXAMPLE_GROUP, ensure_ascii=False, separators=(",", ":"))
-    i = json.dumps(EXAMPLE_IMAGE, ensure_ascii=False, separators=(",", ":"))
+    i = json.dumps(EXAMPLE_IMAGE_TIGHT if framing == "tight" else EXAMPLE_IMAGE, ensure_ascii=False,
+                   separators=(",", ":"))
     return ("EXAMPLE (format only: invented content, not from any real novel)\n"
             "===== BEGIN IMAGES c0001 -> inbox/c0001.images.jsonl =====\n"
             "```jsonl\n" + g + "\n" + i + "\n```\n"
@@ -516,27 +596,49 @@ Inside a ```jsonl code fence, one JSON object per line, double quotes, no commen
 """
 
 NARRATION_API = """HOW YOU ANSWER
-Return the Hinglish narration of the chapter as plain text: the heading line, then the paragraphs. No code fence, no
+Return the Hinglish narration of the chapter as plain text: only the paragraphs (no heading line, no chapter number
+or title). No code fence, no
 block lines, no notes, no commentary, no picture markers. If your answer gets cut off, the next request asks you to
 continue from the last complete paragraph.
+"""
+
+
+RECAP_WORDS = (60, 90)           # the whole recap: about 30-40 seconds spoken
+
+RECAP_API = """THE RECAP
+The REQUEST section holds the finished Hinglish narration of every chapter of one episode. Write a very quick recap
+of the whole episode, spoken at the start of the NEXT episode so a viewer knows where the story stands.
+- {recap_low} to {recap_high} words in all (about thirty to forty seconds spoken), in 4 to 6 short paragraphs of one
+  or two sentences, separated by one blank line. Each paragraph is one picture on screen, so one clear moment each.
+- Only the biggest events of the episode, in order: who did what and what it led to. Leave out everything else. Add
+  nothing that is not in the narration.
+- End on the open question or danger the episode left hanging.
+- Language: {HINGLISH}
+- Storyteller voice, mostly present tense. Dialogue is retold by the narrator, no quotation marks.
+- Numbers as Hindi words, never digits. Devanagari only: no Latin letters at all. Names exactly as in the NAMES list.
+- Return only the paragraphs: no heading, no title, no code fence, no notes, no picture markers.
 """
 
 
 def build_rules(part: str, *, channel: str, title: str, first: int, last: int, paced: float,
                 chars_per_second: float, max_characters: int, chapter: int | None = None,
                 window_count: int | None = None, review: bool = False, target: int = 800, low: int = 640,
-                high: int = 960) -> str:
+                high: int = 960, framing: str = "wide", recap_words: tuple = (0, 0)) -> str:
     """The rules text of ONE API call, taken from the same sections `build_prompt` uses but without the
     conversation part ("how we work", "type next"): part is "translate" (the Hinglish narration of a chapter),
-    "bible" (the BIBLE block of a batch) or "images" (the IMAGES block of one chapter, scenes mode).
-    target / low / high: translate.target_words and the band around it (words of the narration)."""
+    "recap" (a very short recap of the whole episode), "bible" (the BIBLE block of a batch) or "images" (the IMAGES block of one chapter, scenes mode).
+    target / low / high: translate.target_words and the band around it (words of the narration).
+    framing (images only): "wide" is the camera far back (Google Flow); "tight" is a close camera, at most two
+    people and no group staging (an open image model)."""
     from novel.stages import episode_translate as T
+    if framing not in FRAMINGS:
+        raise PromptError(f"framing must be one of {', '.join(FRAMINGS)}, not {framing!r}")
     ex = chapter if chapter is not None else first
     values = {
         "channel": channel, "title": title, "first": first, "last": last, "batch": batch_id(first, last),
         "ex4": f"{ex:04d}", "paced": f"{paced:g}", "chars": round(paced * chars_per_second),
         "max_characters": max_characters, "HINGLISH": T.HINGLISH, "BANNED": ", ".join(banned_words()),
-        "target": target, "low": low, "high": high,
+        "target": target, "low": low, "high": high, "recap_low": recap_words[0], "recap_high": recap_words[1],
         "n_label": "window number", "first_rule": FIRST_RULE_SCENES,
         "window_list": (f"- chapter {chapter}: {window_count} windows" if chapter is not None else ""),
     }
@@ -548,11 +650,14 @@ def build_rules(part: str, *, channel: str, title: str, first: int, last: int, p
             "PART A - THE NARRATION (HINDI block)", "THE NARRATION")
         assert "BIBLE" not in narration, "the narration rules must not mention the BIBLE"
         parts = [ROLE_API, narration, NARRATION_API]
+    elif part == "recap":
+        parts = [ROLE_API, RECAP_API]
     elif part == "bible":
         parts = [ROLE_API, HOW_API, BLOCK_FORMAT_API, PART_C + (REVIEW_TASK if review else "")]
     elif part == "images":
         scenes_rules = PART_A_SCENES.replace("The attached windows file cuts", "The WINDOWS section of the request cuts")
-        parts = [ROLE_API, HOW_API, BLOCK_FORMAT_API, scenes_rules, PART_B, PART_C, example_block()]
+        parts = [ROLE_API, HOW_API, BLOCK_FORMAT_API, scenes_rules, PART_B_TIGHT if framing == "tight" else PART_B,
+                 PART_C, example_block(framing)]
     else:
         raise PromptError(f"internal: unknown rules part {part!r}")
     return fill("\n".join(parts), values)
@@ -637,3 +742,39 @@ def generate(book: str, first: int, last: int, mode: str = "auto", out_dir: Path
     return {"batch": batch, "mode": mode, "folder": folder, "files": files, "prompt": prompt, "meta": meta,
             "windows": {n: len(w) for n, w in per_chapter.items()}, "review": review, "notes": notes,
             "upload": [files["chapters"], files["bible"]] + ([files["windows"]] if mode == "scenes" else [])}
+
+
+# Added to the IMAGES request when the pictures are made by Qwen-Image (images.engine: qwen) and by the trial.
+# Qwen draws each picture fresh from the words (no place picture), so the words carry the faces, the people
+# around and what makes this picture differ from the last.
+QWEN_NOTE = (
+    "\nEach image line becomes a prompt for an image model that draws only what the line says. "
+    "\"mood\": the face in this picture, subtle but clearly visible, naming all three: the mouth (lips parted, one "
+    "corner pulled down, a faint smile, jaw clenched), the eyes (narrowed, widened, lowered, glancing aside) and the "
+    "brows (raised, knitted, one lifted), e.g. \"lips slightly parted, eyes widened, brows raised\". It differs from "
+    "the same person's previous picture in at least one of the three; never exaggerated, never \"neutral\", and never "
+    "only a feeling word such as calm, focused, steady or thoughtful. "
+    "\"others\": whenever the place has people (a tavern, street, market, square, an audience), say who they are, how "
+    "many and how they react, e.g. \"four farmers at the tables leaning in, one laughing, one frowning\"; leave it "
+    "empty only when the person is truly alone. Give every extra person a look of their own that differs from the "
+    "named people (age, build, hair, clothes), e.g. \"a bald, heavy-set mover in a grey apron\"; the image model "
+    "otherwise draws them with a named person's face. A group is no exception: never \"five thugs in vests\", but how "
+    "they differ, e.g. \"five thugs: a bald old brute, a lanky red-haired youth, a short bearded man in a cap, two "
+    "stocky brothers in patched jackets\", and never in the named person's own clothes (a group described only as a "
+    "group came out as five copies of the man they followed). "
+    "Each picture shows what ITS OWN window narrates. When a window narrates what a person TELLS (a memory, a past "
+    "job, a rumour: \"I did X, then Y happened\"), draw that told event itself, with the teller acting it out inside "
+    "the told place, not the room where it is told; give each told place its own group using the matching place of "
+    "the bible, and move one new moment per picture (arrival, discovery, reaction), never the same place from another "
+    "camera. The person is always in the picture: never an empty room for a window where someone acts. Only windows "
+    "that narrate the telling itself (listeners, laughter, replies, drinks, introductions, the opening and the end) "
+    "are drawn in the telling room. "
+    "\"action\": name the spot inside the place, and one thing in the foreground or background that makes this "
+    "picture different from the previous one. \"action\" and \"others\" never name a person of the bible who is not "
+    "in the cast: someone who must be seen is in the cast, everyone else is left out of the words (the image model "
+    "draws a named person it has no reference for with a cast member's face). "
+    "More people: this series shows the people a window involves, not the fewest. Whenever a window names or involves "
+    "two or more people (a conversation, an argument, a group walking, a meeting, the reaction of those present), put "
+    "ALL of them in the cast, up to the maximum, each with their own position (left, centre, right, in front, behind); "
+    "this overrides any 'fewer people is better' rule above. Use a single person only when the window is truly about "
+    "one person alone. Aim for at least half of the pictures to show two or more named people.")

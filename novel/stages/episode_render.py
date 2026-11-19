@@ -13,9 +13,13 @@ Every frame is a sub-pixel affine transform, and each view's source is
 pre-scaled (Lanczos) so the transform only ever shrinks by up to ~12%: moves
 glide instead of stepping a pixel at a time, and fine line art doesn't shimmer.
 
+A second style, "panels" (video.style, or --style; see episode_panels), lays the pictures out as comic panels
+the camera slides between. Everything around the picture (title card, fades, logo, subtitles) is shared.
+
 Usage:
     novel render --chapter 1 --ep 1
     novel render --chapter 1 --ep 1 --end 60    # first minute, to check the look
+    novel render --chapter 1 --ep 1 --style panels --end 60   # try the other style (c0001-first60s-panels.mp4)
 (`py -m novel.stages.episode_render --episode 1 --chapter 1 [--book B]` does the same without the checks.)
 """
 
@@ -106,7 +110,8 @@ _S: dict = {}          # per-worker state: plan, image paths, title layers, sour
 def _init(state: dict) -> None:
     _S.update(state)
     _S["cache"] = OrderedDict()
-    _S["title_layers"] = _title_layers(state["title"]) if state["title"] else None
+    _S["title_layers"] = _title_layers(state["title"]) if state["title"] and state["title"].get("show", True) \
+        else None
 
 
 def _source(k: int, zmax: float):
@@ -150,7 +155,24 @@ def _view_frame(v: dict, t: float):
 def _frame(i: int) -> bytes:
     from PIL import Image
     t = i / FPS
-    views, total = _S["views"], _S["total"]
+    total = _S["total"]
+    if _S.get("style") == "panels":
+        from . import episode_panels as P              # lazily: episode_panels imports this module
+        frame = P.frame(_S, t)
+    else:
+        frame = _kenburns_frame(t)
+    if _S["title_layers"] and t < _S["title"]["dur"]:
+        frame = _title_over(frame, t)
+    fade = min(1.0, t / LEAD, (total - t) / (TAIL - 0.2))
+    if fade < 1.0:
+        frame = Image.blend(Image.new("RGB", (W, H)), frame, max(0.0, fade))
+    paste_logo(frame, _S.get("logo"))                  # on top of everything, fades included (as the old overlay)
+    return frame.tobytes()
+
+
+def _kenburns_frame(t: float):
+    from PIL import Image
+    views = _S["views"]
     lo, hi = 0, len(views) - 1                         # the view whose nominal span holds t
     while lo < hi:
         mid = (lo + hi + 1) // 2
@@ -169,13 +191,7 @@ def _frame(i: int) -> bytes:
         prv = views[lo - 1]
         alpha = (t - (v["t0"] - v["xf_in"] / 2)) / v["xf_in"]
         frame = Image.blend(_view_frame(prv, t), frame, max(0.0, alpha))
-    if _S["title_layers"] and t < _S["title"]["dur"]:
-        frame = _title_over(frame, t)
-    fade = min(1.0, t / LEAD, (total - t) / (TAIL - 0.2))
-    if fade < 1.0:
-        frame = Image.blend(Image.new("RGB", (W, H)), frame, max(0.0, fade))
-    paste_logo(frame, _S.get("logo"))                  # on top of everything, fades included (as the old overlay)
-    return frame.tobytes()
+    return frame
 
 
 def _frames(batch: list[int]) -> bytes:
@@ -218,7 +234,8 @@ def _title_layers(title: dict):
     rows = []                                          # (text, font, colour, spacing px), top to bottom
     if title["series"]:
         rows.append((title["series"].upper(), ser_f, (244, 232, 204), 0.22 * 30))
-    rows.append((f"Chapter {title['chapter']}", chap_f, (244, 232, 204), 0))
+    if title.get("layout") != "episode":               # the old card: "Chapter N" above the chapter name
+        rows.append((f"Chapter {title['chapter']}", chap_f, (244, 232, 204), 0))
     rows += [(ln, name_f, (255, 255, 255), 0) for ln in lines]
     heights = [round(f.size * (1.1 if f is name_f else 1.3)) for _, f, _, _ in rows]
     # 14 px between rows (CSS gap), none between wrapped lines of the name.
@@ -306,25 +323,61 @@ def chapter_images(ep_root: Path, n: int, scenes: list, hd: bool = True, mode: s
     return out
 
 
-def _plan_title(ep_root: Path, n: int):
+def _plan_title(ep_root: Path, n: int, style: str = "kenburns"):
     nar = narration(ep_root, n)
-    focus = [tuple(s.get("focus", [0.5, 0.5])) for s in nar["scenes"]]
-    pl = plan(nar["starts"], nar["audio"], focus)
+    if style == "panels":
+        from . import episode_panels as P
+        pl = P.plan(nar["starts"], nar["audio"], nar["scenes"])
+    else:
+        focus = [tuple(s.get("focus", [0.5, 0.5])) for s in nar["scenes"]]
+        pl = plan(nar["starts"], nar["audio"], focus)
     info = E.info(ep_root)
-    heading_end = nar["para_starts"].get(1, 3.0)       # paragraph 0 is the chapter heading
+    from .episode_scenes import chapter_paras
+    from .heading import body_start
+    # Older chapters open with a spoken heading (paragraph 0); new ones start with the story.
+    heading_end = nar["para_starts"].get(1, 3.0) if body_start(chapter_paras(ep_root, n)) else 0.0
     cfg = E.cfg(info["episode"], n)
-    title = {"dur": round(min(10.0, max(4.0, LEAD + heading_end + 2.5)), 3), "chapter": n,
+    # The title card shows only the episode number, over the first chapter of the episode; other chapters
+    # (and extras such as the intro hook) have none. The panels style letters every sentence as a caption,
+    # so its card is short: gone soon after the story starts, and the first caption with it.
+    show = n == info["start"] and not info.get("extra")
+    dur = max(3.0, LEAD + heading_end) if style == "panels" else min(10.0, max(4.0, LEAD + heading_end + 2.5))
+    title = {"dur": round(dur, 3) if show else 0.0, "show": show, "chapter": n,
              "font": str(title_font_file(cfg)), "font_setting": title_font_setting(cfg),
-             "name": chapter_title(ep_root, n),
-             "series": f"{series_label()} · Episode {info['episode']}" if n == info["start"] else ""}
+             "name": f"Episode {info['episode']}", "series": "", "layout": "episode"}
     return nar, pl, title
 
 
-def _fades(pl, title, ass: Path | None):
+def panel_cues(ep_root: Path, n: int, pl: dict, title: dict, images: list | None = None) -> list[dict]:
+    """The panels style's captions: English subtitle lines cut to fit the panel being narrated, lettered
+    inside it (panel_captions decides what and when, panel_lettering how it looks, episode_panels where in
+    the panel: away from the busy part of the picture when `images` are given)."""
+    from . import episode_captions as C
+    from . import panel_captions as PC
+    from . import panel_lettering as PL
+    from . import episode_panels as P
+    C.ensure(ep_root, n)
+    # title_end=0: no spoken chapter heading any more, so a caption starts with its narration (it was held back
+    # until the title card ended, which put the first captions late). Was: title_end=title["dur"].
+    cues = PC.cues(C.timed_lines(ep_root, n), pl, PL.measure, lead=LEAD, title_end=0.0)
+    for c in cues:                                     # they stay on their panel, stacked: none fades out
+        c["fade_out"] = False
+    return P.place_captions(pl, cues, images)
+
+
+def _fades(pl, title, ass: Path | None, style: str = "kenburns", cues: list | None = None):
     """Windows where a frame change is by design, not a camera jerk: title and end fades, image
-    dissolves, and a subtitle box appearing or disappearing."""
+    dissolves (panels: camera slides), and a subtitle box (or panel caption) appearing or disappearing."""
     fades = [(0, title["dur"] + 0.2), (pl["total"] - TAIL, pl["total"])]
-    fades += [(v["t1"] - v["xf_out"] / 2, v["t1"] + v["xf_out"] / 2) for v in pl["views"][:-1]]
+    if style == "panels":
+        from . import episode_panels as P
+        fades += P.slide_windows(pl)
+        if cues:
+            from . import panel_lettering as PL
+            for c in cues:
+                fades += [(c["t0"], c["t0"] + PL.POP)]
+    else:
+        fades += [(v["t1"] - v["xf_out"] / 2, v["t1"] + v["xf_out"] / 2) for v in pl["views"][:-1]]
     if ass and ass.exists():
         import re
         def secs(t):
@@ -341,12 +394,15 @@ def recheck(ep: int, n: int) -> dict:
     out = ep_root / "video" / f"c{n:04d}.mp4"
     rep = out.with_suffix(".render.json")
     report = json.loads(rep.read_text(encoding="utf-8"))
-    nar, pl, title = _plan_title(ep_root, n)
+    style = report.get("style", "kenburns")
+    nar, pl, title = _plan_title(ep_root, n, style)
     total = pl["total"]
     pi = probe(out)
     vs = next(s for s in pi["streams"] if s["codec_type"] == "video")
     secs = float(pi["format"]["duration"])
-    stats = frame_stats(out, LEAD, TAIL, _fades(pl, title, out.with_suffix(".en.ass") if report.get("captions") else None))
+    cues = panel_cues(ep_root, n, pl, title) if style == "panels" and report.get("captions") else None
+    stats = frame_stats(out, LEAD, TAIL, _fades(pl, title, out.with_suffix(".en.ass") if report.get("captions") else None,
+                                                style, cues))
     report.update(stats)
     report["pass"] = (vs["width"], vs["height"]) == (W, H) and abs(secs - total) <= 1 / FPS + 0.05         and report["has_audio"] and stats["jerk"] < 2 and stats["blank_frames"] == 0
     rep.write_text(json.dumps(report, indent=1), encoding="utf-8")
@@ -354,10 +410,17 @@ def recheck(ep: int, n: int) -> dict:
 
 
 def render(ep: int, n: int, crf: str, preset: str, workers: int, end: float | None,
-           root: Path | None = None, captions: bool = True, hd: bool = True) -> dict:
+           root: Path | None = None, captions: bool = True, hd: bool = True, style: str | None = None) -> dict:
+    """Render chapter n. style: None = the setting (video.style); another style is a try, and its file
+    gets `-<style>` in its name (c0015-panels.mp4) so it never replaces the real chapter video."""
     ep_root = (root or E.root(ep)).resolve()
+    setting = E.video_style(E.cfg(ep, n))
+    if style is None:
+        style = setting
+    elif style not in E.VIDEO_STYLES:
+        raise SystemExit(f"style '{style}': use {' or '.join(E.VIDEO_STYLES)}")
     sub = ""
-    if captions:                                       # English subtitles, burned in by libass
+    if captions and style != "panels":                 # English subtitles, burned in by libass
         from . import episode_captions as C
         C.ensure(ep_root, n)
         ass = ep_root / "video" / f"c{n:04d}.en.ass"
@@ -365,13 +428,16 @@ def render(ep: int, n: int, crf: str, preset: str, workers: int, end: float | No
         C.write_ass(ep_root, n, ass)
         # absolute, escaped path plus the bundled fonts folder: nothing depends on ffmpeg's working directory
         sub = "," + C.chapter_ass_filter(ep_root, n, ass)
-    nar, pl, title = _plan_title(ep_root, n)
-    wm = CL_mode(ep_root, n)
+    nar, pl, title = _plan_title(ep_root, n, style)
+    is_extra = E.info(ep_root).get("extra")             # an extra (the intro hook): its own pictures, no Flow mark
+    wm = "none" if is_extra else CL_mode(ep_root, n)
     images = chapter_images(ep_root, n, nar["scenes"], hd, wm)
+    cues = panel_cues(ep_root, n, pl, title, images) if captions and style == "panels" else []
 
     total = end if end else pl["total"]
     nframes = round(total * FPS)
-    out = ep_root / "video" / f"c{n:04d}{f'-first{int(end)}s' if end else ''}.mp4"
+    tag = f"-{style}" if style != setting and not is_extra else ""   # a try of the other style: never the real name
+    out = ep_root / "video" / f"c{n:04d}{f'-first{int(end)}s' if end else ''}{tag}.mp4"
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd = ["ffmpeg", "-v", "error", "-y",
            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-",
@@ -385,8 +451,14 @@ def render(ep: int, n: int, crf: str, preset: str, workers: int, end: float | No
     ff = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     logo_cfg = E.cfg(ep, n)["video"]["logo"]           # chapter layer: a chapter can switch it off
     logo = logo_layer(logo_cfg, (W, H))
-    state = {"views": pl["views"], "total": pl["total"], "images": [str(p.resolve()) for p in images], "title": title,
+    state = {"style": style, "total": pl["total"], "images": [str(p.resolve()) for p in images], "title": title,
              "logo": logo}
+    if style == "panels":
+        pc = E.cfg(ep, n)["video"].get("panels") or {}
+        state.update({"panels": pl, "paper": pc.get("paper") or "#f3f0e8",
+                      "dim": float(pc["dim"]) if pc.get("dim") is not None else 0.45, "cues": cues})
+    else:
+        state["views"] = pl["views"]
     batch = 6
     t0 = time.time()
     with mp.Pool(workers, initializer=_init, initargs=(state,)) as pool:
@@ -409,23 +481,36 @@ def render(ep: int, n: int, crf: str, preset: str, workers: int, end: float | No
         sys.exit(f"ffmpeg failed (exit {ff.returncode})")
     took = time.time() - t0
 
-    fades = _fades(pl, title, ass if sub else None)
+    fades = _fades(pl, title, ass if sub else None, style, cues)
     pi = probe(out)
     vs = next(s for s in pi["streams"] if s["codec_type"] == "video")
     secs = float(pi["format"]["duration"])
     stats = frame_stats(out, LEAD, 0 if end else TAIL, fades)
+    views = pl["panels"] if style == "panels" else pl["views"]
+    extra = {"panels": len(pl["panels"]), "pages": len(pl["pages"])} if style == "panels" else {}
     report = {"file": out.name, "renderer": "ffmpeg", "width": vs["width"], "height": vs["height"],
               "seconds": round(secs, 3), "expected_seconds": round(total, 3),
               "render_seconds": round(took, 1), "render_fps": round(nframes / took, 2),
               "mb": round(out.stat().st_size / 1e6, 1),
               "has_audio": any(s["codec_type"] == "audio" for s in pi["streams"]),
-              "images": len(images), "views": len(pl["views"]),
-              "view_seconds": round(sum(v["t1"] - v["t0"] for v in pl["views"]) / len(pl["views"]), 2),
-              "captions": bool(sub), "logo": logo_signature(logo_cfg), "title_font": title["font_setting"], "watermark": wm, "crf": crf, "preset": preset, "workers": workers, **stats}
+              "style": style, "images": len(images), "views": len(views),
+              "view_seconds": round(sum(v["t1"] - v["t0"] for v in views) / len(views), 2),
+              **extra, "captions": bool(sub or cues), "logo": logo_signature(logo_cfg), "title_font": title["font_setting"], "watermark": wm, "crf": crf, "preset": preset, "workers": workers, **stats}
     report["pass"] = (vs["width"], vs["height"]) == (W, H) and abs(secs - total) <= 1 / FPS + 0.05 \
         and report["has_audio"] and stats["jerk"] < 2 and stats["blank_frames"] == 0
     out.with_suffix(".render.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     return report
+
+
+def pages(ep: int, n: int, hd: bool = True, root: Path | None = None) -> list[Path]:
+    """The panels layout of chapter n as still pictures, video/cNNNN-pages/pNN.jpg (no video, no ffmpeg)."""
+    from . import episode_panels as P
+    ep_root = (root or E.root(ep)).resolve()
+    nar = narration(ep_root, n)
+    images = chapter_images(ep_root, n, nar["scenes"], hd, CL_mode(ep_root, n))
+    pl = P.plan(nar["starts"], nar["audio"], nar["scenes"])
+    paper = (E.cfg(ep, n)["video"].get("panels") or {}).get("paper") or "#f3f0e8"
+    return P.page_images(pl, [str(p) for p in images], ep_root / "video" / f"c{n:04d}-pages", paper)
 
 
 def main() -> None:
@@ -442,6 +527,8 @@ def main() -> None:
     ap.add_argument("--recheck", action="store_true", help="re-run the checks on the existing video, no rendering")
     ap.add_argument("--no-captions", action="store_true", help="leave out the English subtitles")
     ap.add_argument("--no-hd", action="store_true", help="use the cleaned downloads, not the chaiNNer hd pictures")
+    ap.add_argument("--style", choices=E.VIDEO_STYLES, default=None,
+                    help="draw in this style whatever video.style says (the file gets -<style> in its name)")
     a = ap.parse_args()
     from novel.core import context
     context.activate(context.resolve(a.book)[0])        # point E.root at this book's episodes
@@ -449,7 +536,8 @@ def main() -> None:
         report = recheck(a.episode, a.chapter)
         print(f"  jerk {report['jerk']}  blank {report['blank_frames']}  pass {report['pass']}")
         sys.exit(0 if report["pass"] else 1)
-    report = render(a.episode, a.chapter, a.crf, a.preset, a.workers, a.end, a.root, not a.no_captions, not a.no_hd)
+    report = render(a.episode, a.chapter, a.crf, a.preset, a.workers, a.end, a.root, not a.no_captions, not a.no_hd,
+                    a.style)
     for k, v in report.items():
         print(f"  {k:18} {v}")
     sys.exit(0 if report["pass"] else 1)

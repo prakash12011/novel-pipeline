@@ -614,7 +614,8 @@ def build_review_prompt(run: Run, r: Result, english: str) -> tuple[str, str]:
     for k, w in enumerate(wins, 1):
         narr.append(f"[img {k}]")
         narr += [f"  [para {i}] {t}" for i, t in S.window_text(r.paras, w)]
-    narration = f"[para 0] (title) {r.paras[0]}\n" + "\n".join(narr)
+    from .stages.heading import body_start
+    narration = (f"[para 0] (title) {r.paras[0]}\n" if body_start(r.paras) else "") + "\n".join(narr)
 
     order: list[str] = []
     for s in scenes:

@@ -156,6 +156,10 @@ def setting_line(scene: dict, doc: dict, locations: dict) -> str:
     g = (doc.get("groups") or {}).get(gid) or {}
     loc = _locations(locations).get(g.get("loc")) or {}
     where = g.get("where") or KIND_WHERE.get(str(loc.get("kind") or "").strip().lower())
+    fixed = _one(loc.get("fixed_light"))
+    if fixed:       # a dream place: its own light, whatever time of day the group says (the dream ruins of COI)
+        return (f"SETTING: {SETTING_WORD.get(where, 'here')}, in a dream with a light of its own (not day, not an "
+                f"ordinary night): {fixed.rstrip('.')}.")
     time = str(g.get("time") or "").strip().lower()
     if where not in SETTING_WORD or time not in SETTING_TIME:
         return ""

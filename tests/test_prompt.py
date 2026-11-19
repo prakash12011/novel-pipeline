@@ -320,3 +320,73 @@ def test_copy_without_clipboard_still_exits_zero(book, monkeypatch, capsys):
     assert run(["--chapters", "1-3", "--copy"]) == 0
     out = capsys.readouterr().out
     assert "not available" in out and str(book / "gemini" / "B001-003" / "prompt.txt") in out
+
+
+# ---------------------------------------------------------------- build_rules framing (wide / tight)
+
+RULES = dict(channel="Manga and Novel", title="The Harbour Tales", first=4, last=5, paced=7, chars_per_second=15,
+             max_characters=4, chapter=4, window_count=9)
+
+TIGHT_TEXTS = (
+    'The camera is CLOSE in this series: one person per picture is best, two only when the moment is between those two',
+    'where that person is in the FRAME only, in plain words: "left", "centre" or "right"',
+    '"medium" is one or two people from the waist up and is the normal shot.',
+    'Name the spot inside the place where this picture happens (by the oven, at the doorway, beside the fallen pillar)',
+    '"detail" is an OBJECT ALONE: its cast is empty [], and no person and no hand is in the picture; when a person '
+    'holds or uses the object, use "medium" instead.',
+)
+
+
+def flat(text):
+    return " ".join(text.split())
+
+
+def test_wide_framing_is_the_default_and_unchanged(book):
+    default = P.build_rules("images", **RULES)
+    assert P.build_rules("images", framing="wide", **RULES) == default
+    # the wide rules are PART_B as it stands, with its example
+    assert "Fewer people is better" in default and '"medium" for at most a third' in default
+    assert '"shot":"wide"' in default and "beside the scale" not in default
+    for text in TIGHT_TEXTS:
+        assert flat(text) not in flat(default)
+    assert LEFTOVER.findall(default) == []
+
+
+def test_tight_framing_changes_only_the_four_bullets(book):
+    wide, tight = P.build_rules("images", **RULES), P.build_rules("images", framing="tight", **RULES)
+    for text in TIGHT_TEXTS:
+        assert flat(text) in flat(tight), text
+    assert '"medium" for at most a third' not in tight and "Fewer people is better" not in tight
+    assert 'Never a crowd: anyone else goes in "others"' in flat(tight)
+    assert "ONLY for a window with an empty cast, or for the first image of a group" in flat(tight)
+    assert '"detail" is a hand, an object or a face' not in flat(tight)
+    # the schema lines and the placeholders are the same as in the wide rules
+    schema = [l for l in P.PART_B.splitlines() if l.lstrip().startswith(("{", '"cast"', '"others"'))]
+    assert schema and all(l in P.PART_B_TIGHT.splitlines() for l in schema)
+    assert LEFTOVER.findall(tight) == []
+    assert "at most 4" in tight and "never the words nude" in flat(tight)
+    assert all(len(l) <= 120 for l in P.PART_B_TIGHT.splitlines())
+    assert wide != tight and len(P.PART_B_TIGHT.splitlines()) >= len(P.PART_B.splitlines())
+
+
+def test_tight_example_is_valid_and_close(book):
+    tight = P.build_rules("images", framing="tight", **RULES)
+    assert '"shot":"medium"' in tight and '"shot":"wide"' not in tight
+    rows = [json.loads(l) for l in tight.split("EXAMPLE (format only")[1].splitlines() if l.startswith("{")]
+    group, image = rows
+    assert image["shot"] == "medium" and [c["position"] for c in image["cast"]] == ["left", "right"]
+    assert 150 <= len(image["action"]) <= 450 and len(image["cast"]) == 2
+    assert all(c["key"] in group["present"] for c in image["cast"])
+    assert group == P.EXAMPLE_GROUP
+
+
+@pytest.mark.parametrize("part", ["translate", "bible"])
+def test_framing_only_affects_the_images_part(book, part):
+    assert P.build_rules(part, framing="tight", **RULES) == P.build_rules(part, **RULES)
+
+
+def test_unknown_framing_is_an_error(book):
+    with pytest.raises(P.PromptError, match="framing"):
+        P.build_rules("images", framing="medium", **RULES)
+    with pytest.raises(P.PromptError):
+        P.build_rules("translate", framing="", **RULES)

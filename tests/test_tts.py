@@ -295,3 +295,29 @@ def test_reset_with_nothing_recorded(env, capsys):
     assert novel("reset", "--yes") == 0
     assert "nothing to reset" in capsys.readouterr().out
     assert not (env.root / "tts-state.json").exists()
+
+
+def hindi_files(env):
+    ds = paths.kaggle_work_dir("coi") / "coi-e001-tts" / "dataset" / "hindi"
+    return sorted(p.name for p in ds.glob("*.txt"))
+
+
+@needs_ffmpeg
+def test_the_intro_goes_in_the_same_run_and_comes_home_in_its_own_folder(env, capsys):
+    from novel.stages import episode_intro as I
+    I.init(1, "एक छोटी सी बात हुई थी।\n\nफिर एक और बात हुई।")
+    assert novel("push") == 0
+    assert hindi_files(env) == ["00001.txt", "00002.txt", "09001.txt"]       # one dataset, one kernel
+    assert novel("watch", "--interval-seconds", "0.1") == 0
+    assert "3/3 chapters brought home" in capsys.readouterr().out
+    iroot = E.root(9001)
+    assert (iroot / "audio" / "00001.mp3").stat().st_size > 1000 and (iroot / "timing" / "00001.json").is_file()
+    assert Manifest.load(iroot / "manifest.json").chapters[0].status == "done"
+    assert novel("push") == 0 and "nothing to narrate" in capsys.readouterr().out    # neither is offered again
+
+
+def test_named_chapters_or_no_intro_leave_the_intro_out(env):
+    from novel.stages import episode_intro as I
+    I.init(1, "एक छोटी सी बात हुई थी।")
+    assert novel("push", "--dry-run", "--no-intro") == 0 and hindi_files(env) == ["00001.txt", "00002.txt"]
+    assert novel("push", "--dry-run", "--chapters", "1") == 0 and hindi_files(env) == ["00001.txt"]

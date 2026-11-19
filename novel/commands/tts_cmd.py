@@ -6,7 +6,7 @@ import argparse
 
 from novel.core import context
 
-USAGE = ("usage: novel tts push [--book B] [--ep N] [--chapters A-B] [--account NAME] [--dry-run]\n"
+USAGE = ("usage: novel tts push [--book B] [--ep N] [--chapters A-B] [--account NAME] [--no-intro] [--dry-run]\n"
          "       novel tts status|pull [--book B] [--ep N]\n"
          "       novel tts watch [--book B] [--ep N] [--interval-seconds S]\n"
          "       novel tts reset [--book B] [--ep N] [--yes]")
@@ -27,6 +27,8 @@ def main(argv) -> int:
         ap.add_argument("--chapters", help="e.g. 3 or 2-8 (default: locked chapters without audio)")
         ap.add_argument("--account", help="Kaggle profile (default: settings tts.kaggle_profile, "
                                           "then kaggle.account)")
+        ap.add_argument("--no-intro", action="store_true",
+                        help="do not send the episode's intro/recap (extras/E9NNN) with the chapters")
         ap.add_argument("--dry-run", action="store_true",
                         help="stage everything and list it; call nothing")
     if sub == "watch":
