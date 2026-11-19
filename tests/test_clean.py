@@ -137,7 +137,7 @@ def set_mode(mode):
     (paths.book_dir(BOOK) / "book.yaml").parent.mkdir(parents=True, exist_ok=True)
     (paths.book_dir(BOOK) / "book.yaml").write_text(
         yaml.safe_dump({"book": {"title": "Demo", "author": "A"}, "images": {"watermark": mode},
-                        "video": {"hd": {"enabled": False}, "disclaimer": {"seconds": 1.0}}}), encoding="utf-8")
+                        "video": {"style": "kenburns", "hd": {"enabled": False}, "disclaimer": {"seconds": 1.0}}}), encoding="utf-8")
 
 
 def make_chapter(root: Path, n: int = 1) -> dict:
@@ -339,7 +339,7 @@ def test_hd_step_starts_from_the_clean_copies_and_crops_nothing(world, monkeypat
     monkeypatch.setattr(HD, "MODEL", model)
     seen = []
 
-    def fake_chain(chain, work):
+    def fake_chain(chain, work, expected=0):
         nodes = {n["data"]["schemaId"]: n["data"]["inputData"] for n in chain["content"]["nodes"]}
         src, dst = Path(nodes["chainner:image:load_images"]["0"] if "0" in nodes["chainner:image:load_images"]
                         else nodes["chainner:image:load_images"][0]), None

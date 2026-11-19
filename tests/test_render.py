@@ -149,7 +149,7 @@ def set_hd(mode):
     """video.hd.enabled for the book (and a fast disclaimer card)."""
     write_yaml(paths.book_dir(BOOK) / "book.yaml",
                {"book": {"title": "Demo Tale", "author": "A. Writer"},
-                "video": {"hd": {"enabled": mode}, "disclaimer": {"seconds": 1.0}}})
+                "video": {"style": "kenburns", "hd": {"enabled": mode}, "disclaimer": {"seconds": 1.0}}})   # not about the style
 
 
 @pytest.fixture(scope="module")
@@ -389,4 +389,5 @@ def test_an_unknown_style_is_refused(world, capsys):
 
 def test_shape_names_agree_between_the_panel_modules():
     from novel.stages import episode_panels, episode_scenes
-    assert set(episode_panels.SHAPES) == set(episode_scenes.PANEL_SHAPES)
+    # a scene may still name a switched-off shape; it is drawn as landscape (SWITCHED_OFF)
+    assert set(episode_panels.SHAPES) | set(episode_panels.SWITCHED_OFF) == set(episode_scenes.PANEL_SHAPES)

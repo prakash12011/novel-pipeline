@@ -29,9 +29,11 @@ You see: a line like `[coi · E003 · ch 21-30]`, a table with one row per chapt
 novel images
 ```
 
-You see, per chapter, `chapter 2: 68 pictures to make`. If no image server is running it starts one on a free Kaggle account (`Kaggle account seema: free`, then `still starting, 2 min` ... `the server answers at https://...`; about 7-10 minutes). Then one line per picture, like `s12  49.3s  avg 51.1s  3 left, ~3 min`, and `chapter 2: 68 pictures copied into ...\images\c0002`. A new character gets a character sheet first (`lumian_lee: lumian_lee_sheet_seed202.jpg`).
+You see, per chapter, `chapter 2: 68 pictures to make`. If no image server is running it starts **two** notebooks, each on its own free Kaggle account (`Kaggle account seema: free`, then `Kaggle account shashi: free` for the second, then `still starting, 2 min` ... `the server answers at https://coi-pipeline...`; about 5-10 minutes; the second joins by itself when it answers). Then one line per picture, like `s12  49.3s  avg 51.1s  3 left, ~3 min`, with `--qa` also a QA line per picture (`QA s12: pass`, or `QA s12: failed (duplicate_person); redrawing with the fixes` then `QA s12: fixed after the redraw`) and the QA summary (`picture QA: 64 pass, 2 kept, 1 fixed, 1 failed; 2 redrawn; NEEDS A LOOK: s41`), and `chapter 2: 68 pictures copied into ...\images\c0002`. Each person is drawn from their front view (`bible\qwen\front\`); a new character without one gets a character sheet first.
 
-How much it does: every chapter of the episode that has picture lines and is missing pictures. About 50-60 seconds per picture (a 68-picture chapter: about an hour). `--chapters 2-3` picks chapters, `--max 25` stops each chapter after its first 25 pictures. Ctrl+C is safe; run it again and finished pictures are skipped. The server stops by itself after 20 minutes without work.
+How much it does: every chapter of the episode that has picture lines and is missing pictures. About 50 seconds per picture per server: a 68-picture chapter takes about an hour on one server, about half that on two. `--chapters 2-3` picks chapters, `--max 25` stops each chapter after its first 25 pictures, `--qa` adds the picture QA (each picture checked and a failed one redrawn once; it uses OpenCode Go allowance): leave it off when you look at the pictures yourself, use it for a night run. Ctrl+C is safe; run it again and finished pictures are skipped. The servers stop by themselves after 20 minutes without work.
+
+Pictures that QA marked `failed` (or `draw_failed`) are listed at the end; `novel ktrial qa --chapter 2 --status` shows every picture's state, tries and what QA found. Look at those few by eye (`novel sheet --chapter 2 --open`).
 
 (Flow instead: set `images.engine: flow`; then Chrome must be open and signed in to Flow, see `novel chrome`.)
 
@@ -240,16 +242,17 @@ Wait for the push to finish on Kaggle before `pull` (`novel tts status --ep 900`
 
 ### Step 13b. Intro hook (optional; before the first chapter)
 
-A short spoken hook (or a recap of the last episode) that opens the video, drawn as comic panels with Qwen-Image-2.1 on
-Kaggle (not Flow). It lives in `extras\E9NNN` (9000 + the episode number). Put the Hindi in a text file, one paragraph
-per picture (about 5-7 s each), and write `extras\E9NNN\shots.json` with one shot per paragraph
-(`{"id": 1, "cast": ["lumian_lee", "skinless_monster"], "shot": "...", "scene": "..."}`; `cast` = bible keys whose Qwen
-character sheets in `_work\ktrial\c*\qwen-image-turbo\charsheet\` are sent as references).
+A short spoken hook (or a recap of the last episode) that opens the video: full-screen pictures with pan and zoom (Ken
+Burns, never comic panels), drawn with Qwen-Image-2.1 on Kaggle (not Flow) from the characters' front views. It lives in `extras\E9NNN` (9000 + the episode number). Put the Hindi in a text file, one paragraph
+per picture (about 5-7 s each), and `novel intro shots` writes `extras\E9NNN\shots.json` with one shot per paragraph (or write it by hand)
+(`{"id": 1, "cast": ["lumian_lee", "skinless_monster"], "shot": "...", "scene": "..."}`; `cast` = bible keys whose approved front
+views in `bible\qwenront\` are sent as references).
 
 ```cmd
 novel intro init --ep 1 --text-file hook.txt
-novel tts push --ep 9001 --chapters 1 --account seema     (the other account when the Qwen kernel uses yours)
-novel tts pull --ep 9001
+novel intro shots --ep 1                                  (Claude writes shots.json from the paragraphs; --redo to write it again)
+novel tts push --ep 1 --account seema     (narrates the chapters AND this intro/recap in one Kaggle run)
+novel tts pull --ep 1
 novel ktrial up --chapter 24 --model qwen-image-turbo     (only if the Kaggle ComfyUI is not running)
 novel intro images --ep 1                                 (--only s02 --seed 303 for another try)
 novel intro render --ep 1
@@ -313,7 +316,7 @@ You see `marked as published: ...` and `Next episode: novel episode add --book c
 
 ## Writing with the Gemini API
 
-`novel write` does by code what the Gemini conversation below does by hand. It uses your API keys (`GEMINI_API_KEY`, `GEMINI_API_KEY2`, ... in `secrets.env`) and the model in `gemini.api_model` (Gemini 3.5 Flash Lite).
+`novel write` does by code what the Gemini conversation below does by hand. It uses your API keys (`GEMINI_API_KEY`, `GEMINI_API_KEY2`, ... in `secrets.env`) and the model in `gemini.api_model` (default Gemini 3.5 Flash Lite; this PC's settings use `gemini-4-hydrogen`). Calls stay inside the free tier per key and go to OpenRouter only when every key has used its day (see "Free tier and OpenRouter" below).
 
 **What one run does** (for the next 5 chapters that need work):
 
@@ -322,7 +325,9 @@ You see `marked as published: ...` and `Next episode: novel episode add --book c
 3. The **pictures** of each chapter: one call per chapter. Each call carries the rules, the bible as it is at that moment (so people and places added by an earlier chapter of the run are known), that chapter's English text and its windows only.
 4. Every answer goes through the same importer as `novel import` (raw copy in `gemini\<batch>\raw\`, checks, progress, the scene file). When it says an answer is wrong, the tool asks again with the FIX list and the rejected block; when it says the block stops early, it asks for the missing windows only. Each block is asked at most 3 times (`gemini.max_attempts_per_block`); a block that still fails is left as it is, reported, and the run goes on with the next chapter.
 
-**Rate limits.** When one key is limited the next key is used (the line says `key 1 of 3`, never the key). When every key is limited the tool tries the models in `gemini.fallback_models`, then waits a minute and tries again, a few times; if the daily quota is gone it stops with `STOPPED: the Gemini quota is used up`. It also waits `gemini.min_seconds_between_calls` (4) between calls. Which model wrote each block is kept in `progress.json` and in the scene file (`source.model`).
+**Who writes what.** The translation (and the recap): the free Gemini keys, then Gemini 4 Argon on OpenCode Go (told to stay under 800 Hindi words), then OpenRouter. The scene lines: **Claude Sonnet 5.5** first, through headless Claude Code (`claude -p`) on the Claude subscription logged in on this PC (a fresh, unsaved session per chapter; effort medium), then the free Gemini keys, Argon and OpenRouter (`gemini.scene_writer`, `gemini.scene_claude`, `gemini.opencode_fallback` in docs/settings.md). If Claude stops (its usage limit, for example), the run goes on with the next writer.
+
+**Free tier and OpenRouter.** Every Gemini call (write, recap, faces, captions, meta) is counted per key in `<novel home>\gemini_usage.json`: at most 5 calls a minute and 20 a day per key (`gemini.free_tier`; the day resets at midnight Pacific, as Google's does). Before each call the tool takes a key with calls left (`key 1 of 4`, never the key); when every key used its minute it waits (`free tier: every key used its 5 calls this minute, waiting 40s`); when every key used its day the call goes to **OpenRouter** (`OPENROUTER_API_KEY`, the same model as `google/<model>`, billed per token). A 429 from Google holds that key a minute, or for the rest of the day when Google says the daily quota is gone. `novel quota` shows the counts. To send everything to OpenRouter (Gemini overloaded, the work cannot wait): `set NOVEL_FORCE_OPENROUTER=1` for one command, or `gemini.force_openrouter: true`. It also waits `gemini.min_seconds_between_calls` (4) between calls. Which model wrote each block is kept in `progress.json` and in the scene file (`source.model`).
 
 **Options.**
 
@@ -427,13 +432,14 @@ Gemini keeps getting the same line wrong? Run `novel qa --fix-prompt 21` after t
 
 ### `novel write`: a rate limit, a quota, or a block that keeps being rejected
 
-**You see** lines like `rate limit: key 1 of 3 on gemini-3.5-flash-lite; switching to key 2`: nothing to do, the next key is used. `all 3 keys rate-limited, waiting 65s (wait 1 of 4)`: it waits and tries again by itself.
+**You see** lines like `rate limit: key 1 on gemini-4-hydrogen (held for a minute)` or `free tier: every key used its 5 calls this minute, waiting 40s`: nothing to do, another key is used or it waits by itself. `every Gemini key has used its free calls for today; asking OpenRouter`: the rest of the day's calls go to OpenRouter (paid per token). Many `HTTP Error 503` lines: Gemini is overloaded; after a few drops a call goes to OpenRouter by itself.
 
-**You see** `STOPPED: the Gemini quota is used up` (every key is limited after the waits; the free quota resets at midnight, Pacific time). The run ends cleanly with the table of what was finished.
+**You see** `every Gemini key has used its free calls for today ... and OpenRouter did not answer` (or, with the free-tier count off, `STOPPED: the Gemini quota is used up`). The run ends cleanly with the table of what was finished.
 
 **Do:**
-1. Try again later with the same command: `novel write`. Finished chapters are skipped, a block that was filed stays filed.
-2. Or add another key to `secrets.env` (`GEMINI_API_KEY2`), or name another model in `gemini.fallback_models`.
+1. `novel quota` shows what each key has used. Try again later with the same command: `novel write`. Finished chapters are skipped, a block that was filed stays filed.
+2. Or check `OPENROUTER_API_KEY` in `secrets.env`, add another key (`GEMINI_API_KEY2`), or name another model in `gemini.fallback_models`.
+3. Gemini keeps failing and the work cannot wait: `set NOVEL_FORCE_OPENROUTER=1` then the same command (every call goes to OpenRouter).
 
 **You see** `chapter 21: scenes: not complete after 3 attempts; reported, going on`, and `failed` or `partial` in the table. The answer kept being rejected. The lines above it say why (`rejected (2 errors): ...`); the tool already sent those errors back to Gemini each time.
 
@@ -580,6 +586,8 @@ novel settings show --book mybook
 At least set `images.flow_project`, `publish.title_template`, `publish.description_template` and `publish.research_seeds` in `book.yaml` (see `docs/settings.md`).
 
 **6. Go through "One episode, start to finish" from step 3.** `novel write` translates the chapters that have no Hindi and locks them, then writes the bible and the pictures. (The by-hand "full" batch of `novel prompt` is **[FULL MODE: NOT BUILT]**.)
+
+**7. Before the first `novel images`: the character pictures.** Once `novel write` has filled the bible, make and check the front views every picture uses as references: `novel ktrial up --chapter 1 --model qwen-image-turbo`, then `novel ktrial front --chapter 1` (see "Character pictures (front views)"). Do it again for characters that appear later (`--keys new_one,other`).
 
 Migrating the old COI Audiobook project: `novel migrate coi --from "D:\COI Audiobook" --dry-run` shows the plan and writes nothing; without `--dry-run` it copies (it never changes the old folder); add `--with-media` to copy the finished videos too. Only the book `coi` can be migrated.
 
@@ -772,7 +780,7 @@ video:
 
 Then run `novel build`. Chapters that were drawn in the other style count as out of date and are rendered again.
 
-How a panel gets its shape: one character in the scene gives a tall panel, two give a wider one, three or more (and landscapes) give a wide one. Two panels next to each other never have the same shape. A page has at most two upright panels (`portrait` or `tall`); the rest of a page's single-character scenes get a square, landscape or wide panel. A `"panel"` you set by hand is never changed. In a tall panel the picture slides or zooms, so the whole picture is seen.
+A panel fills about 95% of the screen, and the next panel peeks in by only 1-2% at its edge. A page is one row of about four panels. There are two shapes: `wide` (the full 16:9 picture; three or more characters, establishing and wide shots) and `landscape` (4:3, one size below it; everything else). Two panels next to each other never have the same shape. The upright shapes (`portrait`, `tall`) and `square` are switched off in `novel/stages/episode_panels.py` (commented, not deleted); a scene's old `"panel"` key with one of those is drawn as `landscape`.
 
 To fix one panel, edit that scene in the episode's `scenes\00021.json`, then render the chapter again:
 
@@ -785,17 +793,37 @@ Two more settings change the page: `video.panels.paper` (the page colour) and `v
 
 ### Pictures with Qwen-Image on Kaggle (the default)
 
-`novel images` draws every picture with **Qwen-Image-2.1-Turbo** (8 steps, 1376x768) in ComfyUI on a Kaggle T4, reached through an ngrok tunnel. What makes the pictures consistent:
+`novel images` draws every picture with **Qwen-Image-2.1-Turbo** (8 steps, 1376x768) in ComfyUI on Kaggle T4s: two notebooks, each its own server, fed from one shared queue on this PC. What makes the pictures consistent:
 
-- **Picture lines** (`novel write`): with `images.engine: qwen` the IMAGES request carries the Qwen rules: a story someone tells is drawn as that story in its own places, not the room it is told in; every extra person gets a look of their own (age, build, hair, clothes); every expression names the mouth, the eyes and the brows, changes from picture to picture and is never only "calm" or "focused". At most 2 named people per picture (`images.max_characters`).
-- **Character sheets**: each named person is sent with their sheet from `<book>\bible\qwen\<key>_sheet_seed202.jpg` (front, side, back and two face close-ups). A person without a sheet gets one made first (`novel ktrial charsheet --chapter N --missing`; one picture each). A special outfit (a bible variant) uses the Flow portrait from `bible\flow\` instead.
-- **Prompt guards** in every picture: identity only from the sheet (face, hair, skin, clothes, drawing style), the face of this picture in its own sentence ("subtle but clearly visible, not the neutral face of the reference"), "appears only once; every other person has a clearly different face, hair and clothes", clean eyes, hands with five fingers, no text.
-- **Files**: `images\cNNNN\sNN-2k.jpg` in the episode, the prompt beside it as `sNN.prompt.txt`. Each chapter works in `<book>\_work\ktrial\cNNNN\` (prompts, references, server address).
+- **Picture lines** (`novel write`): with `images.engine: qwen` the IMAGES request carries the Qwen rules: a story someone tells is drawn as that story in its own places, not the room it is told in; every extra person gets a look of their own (age, build, hair, clothes); every expression names the mouth, the eyes and the brows, changes from picture to picture and is never only "calm" or "focused"; the action names the spot in the place and never names a bible person who is not in the cast. At most 2 named people per picture (`images.max_characters`).
+- **References: the front views.** Each named person is sent with their approved front view, `<book>\bible\qwen\front\<key>_front.jpg` (one detailed full-body figure, 1088x1472; see "Character pictures" below). Someone without a front view falls back to their character sheet (`bible\qwen\<key>_sheet_seed202.jpg`), made first when missing (`novel ktrial charsheet --chapter N --missing`). A special outfit (a bible variant) uses the Flow portrait from `bible\flow\` instead.
+- **The prompt** names each person once, in a block: `ONE named person, drawn once: X` or `TWO DIFFERENT people, each drawn once, clearly unlike each other: X is the ...; Y is the ...`, then one line per person (`[where: Name (reference) - look; pose; hands; wearing; face: mood]`); unnamed extras go "in the background, smaller and plainly different from them". It ends with: one single scene (no reference sheet, no multiple views), no text or bubbles, hands with five fingers, clean eyes with no white specks.
+- **Picture QA**, only with `novel images --qa` (for unattended runs; normally a person looks at the pictures), right after each picture (OpenCode Go, `OPENCODE_API_KEY`): a panel (LongCat 2.5, free on Go, + Claude Haiku 5.5 on your Claude subscription, which reads the picture file in place; Qwen4 Max as spare) checks it; any fail goes to the referee (Claude Opus 5.5 on the subscription), who keeps it or lists every problem; the picture is redrawn once with those fixes (by whichever server is free) and the referee checks the redraw. The status list `qa.json` (next to the pictures, copied into the episode) says each picture's state, tries, server and findings. Without `--qa` there is no QA and no `qa.json`; `images.qa.*` in `docs/settings.md`. The models were chosen on 12 labelled chapter 1 pictures: Argon caught every duplicate person, Qwen4 Max 5 of 6, Haiku 4 of 6, LongCat 3 of 4, none of them failed a good picture.
+- **Files**: `images\cNNNN\sNN-2k.jpg` in the episode, the prompt beside it as `sNN.prompt.txt`, the QA status list as `qa.json`. Each chapter works in `<book>\_work\ktrial\cNNNN\` (prompts, references, `server.json` / `server-2.json`).
 - **HD**: `images.watermark: none` (Qwen pictures have no mark), so `novel hd` only upscales them to 1920x1080; nothing is cropped.
 
-A picture that came out wrong (a face doubled, a wrong expression): `novel ktrial run --chapter 21 --only s12 --reroll` draws it again with the next seed in the work folder; then `novel images --chapters 21` copies it into the episode.
+A picture that came out wrong (a face doubled, a wrong expression): `novel ktrial run --chapter 21 --only s12 --reroll` draws it again with the next seed in the work folder; then `novel images --chapters 21` copies it into the episode. Several at once without QA (free): `novel ktrial run --chapter 21 --only s12,s35,s38 --redo`.
 
-**Two Kaggle jobs, three accounts.** The image server (`kaggle\comfy_server.ipynb`, kernel `<user>/<book>-ktrial-comfy`) and the narration (`kaggle\episode_tts.ipynb`, kernel `<user>/hindi-audiobook-daily`) are separate notebooks. With `kaggle.pick_free: true` each job takes the first account of `kaggle.profiles` (prakash, seema, shashi) that has no notebook running, so they never share a GPU; `images.kaggle_profile` / `tts.kaggle_profile` is tried first, and `--account NAME` always wins. You see `Kaggle account seema: busy (seema12011/coi-ktrial-comfy)` and `Kaggle account shashi: free`. The image server needs the ngrok token as a private dataset `<user>/ngrok-token` on its account; a free account without it gets it uploaded from `kaggle\NGROK_AUTHTOKEN` (the fixed domain in `%USERPROFILE%\.kaggle\ngrok-domain` stays the same). A free ngrok account opens one tunnel at a time, so only one image server runs.
+**Two notebooks, one queue.** `novel ktrial up` (and `novel images` when no server answers) starts two notebooks, each on its own Kaggle account (`images.servers: 2`; Kaggle queues a second notebook on the same account until the first ends): `<book>-ktrial-comfy` and `<book>-ktrial-comfy-2`. Whichever server is free takes the next job (pictures, place plates, QA redraws, front views); a picture waits for its place plate; a server that stops answering hands its picture to the other, and the run never waits for a server that is still starting (it joins when it answers). One server alone still finishes the run.
+
+**The addresses.** Notebook 1: the named Cloudflare tunnel `images.cf_hostname` (`coi-pipeline.prakashverma.com`), then the ngrok dev domain, then a Cloudflare quick tunnel. Notebook 2: the second named tunnel `images.cf_hostname_2` (`coi-pipeline-alt.prakashverma.com`), then a quick tunnel (no ngrok: its fixed domain serves one notebook). Each named tunnel's public hostname must point at `http://localhost:8189` in the Cloudflare dashboard. The tokens are private Kaggle datasets uploaded from `kaggle\CLOUDFLARE_TUNNEL_TOKEN` (`cloudflare-tunnel`) and `kaggle\CLOUDFLARE_TUNNEL_TOKEN_2` (`cloudflare-tunnel-2`), and the ngrok token from `kaggle\NGROK_AUTHTOKEN` (`ngrok-token`); a free account without them gets them uploaded. Never install the `cloudflared` service on this PC: the connector runs inside the notebook.
+
+**Kaggle accounts.** The image servers and the narration (`kaggle\episode_tts.ipynb`, kernel `<user>/hindi-audiobook-daily`) are separate notebooks. With `kaggle.pick_free: true` each job takes the first account of `kaggle.profiles` (prakash, seema, shashi) that has no notebook running; `images.kaggle_profile` / `tts.kaggle_profile` is tried first, and `--account NAME` always wins. You see `Kaggle account seema: busy (seema12011/coi-ktrial-comfy)` and `Kaggle account shashi: free`. The second image notebook takes another free account (`images.kaggle_profile_2` first, never the first notebook's); with no free account left only one server starts. `novel ktrial down --chapter N` stops both at once (otherwise they stop after 20 idle minutes).
+
+### Character pictures (front views)
+
+The references above are made once per book, by hand, and checked by eye (no picture QA): when a new book is added, and when new characters appear.
+
+```cmd
+novel ktrial up --chapter 1 --model qwen-image-turbo
+novel ktrial front --chapter 1
+```
+
+1. Characters without a `face` line first get one from Gemini, 8 per call so the faces differ: sex and age first (as the novel says), then face shape, cheekbones, nose, brows, eyes, lips, build, age marks and one telling feature; plus a resting expression. A bible look an image model would draw wrong is reworded, and the change is printed (`look reworded / was: ... / now: ...`); a call Gemini refuses is asked again one character at a time.
+2. Each character is drawn at 1088x1472 with a seed of its own, as an ID photo: front view, head upright and level, eyes on the viewer, calm closed-mouth face (the resting expression is left out: smiles came out as a head tilt), arms at the sides, feet visible. A mounted rider is drawn alone on foot.
+3. Look at `<book>\bible\qwen\front\`. Redraw the ones you do not like: `novel ktrial front --chapter 1 --keys martie,owl --redo` (the old picture goes to `front\old\`). A wrong person (wrong sex or age) is a bible problem: fix the character's `look` and `face` in `bible\characters.json` first.
+
+(`--chapter` only names the folder whose server record is used. A command of its own for this is on the TODO list.)
 
 ### Picture size
 
@@ -953,7 +981,7 @@ Checks this PC (Python, packages, Node, ffmpeg, Chrome, Kaggle, keys, fonts) and
 - `novel jobs --stop NAME`: stops a job (`images` stops cleanly after the current picture; the Kaggle run itself keeps going when you stop `tts`).
 
 ### novel tts
-- `novel tts push [--book B] [--ep N] [--chapters A-B] [--account NAME] [--dry-run]`: sends the locked Hindi of chapters without audio to Kaggle. With `kaggle.pick_free` it takes a free account (not the one running the image server). `--dry-run` stages and lists, calls nothing.
+- `novel tts push [--book B] [--ep N] [--chapters A-B] [--account NAME] [--no-intro] [--dry-run]`: sends the locked Hindi of chapters without audio to Kaggle, and with them the episode's intro/recap (`extras\E9NNN`, from `novel intro init`) when it is locked and has no audio: one Kaggle run, one model load, and `tts pull` files the recap's audio in its own folder. `--chapters` or `--no-intro` leaves the intro out (then `novel tts push --ep 9NNN --chapters 1` still works on its own). With `kaggle.pick_free` it takes a free account (not the one running the image server). `--dry-run` stages and lists, calls nothing.
 - `novel tts status [--book B] [--ep N]`: Kaggle's state of the run.
 - `novel tts pull [--book B] [--ep N]`: brings finished audio and timing home.
 - `novel tts watch [--book B] [--ep N] [--interval-seconds S]`: checks every few minutes and pulls when done.
@@ -963,24 +991,25 @@ Checks this PC (Python, packages, Node, ffmpeg, Chrome, Kaggle, keys, fonts) and
 `novel captions [--book B] [--ep N] [--chapters A-B] [--force]`: writes the English subtitle text for locked chapters. `--force` redoes current ones. (A build makes missing captions itself when a Gemini key exists.)
 
 ### novel images
-`novel images [--book B] [--ep N] [--chapters A-B] [--max N] [--dry-run]` with `images.engine: qwen` (the default): draws every missing picture of the episode's chapters with Qwen-Image on Kaggle (starts the server on a free account when none answers, makes missing character sheets first) and writes `images\cNNNN\sNN-2k.jpg`. `--max N`: at most the first N pictures of each chapter. `--dry-run`: lists what is missing, starts nothing. With `images.engine: flow`, `novel images [--book B] [--ep N] [--chapters A-B] [--max N] [--batch K] [--resend ID] [--upgrade] [--quality 1K|2K] [--i-checked-flow] [--dry-run]` makes pictures in Flow. Without `--chapters` it takes the next `images.chapters_per_day` chapters that have work. `--max` caps pictures this run. `--batch K` sends K prompts side by side. `--resend c0021-s05` sends one picture again on purpose. `--upgrade` upgrades 1K pictures to 2K. `--quality 2K` (or `1K`) sets the download size for this run only; the default is `images.quality`, which is 1K. `--i-checked-flow` after a Flow stop. `--dry-run` shows what it would do and the command, runs nothing.
+`novel images [--book B] [--ep N] [--chapters A-B] [--max N] [--qa] [--dry-run]` with `images.engine: qwen` (the default): draws every missing picture of the episode's chapters with Qwen-Image on Kaggle (starts two servers, each on its own free account, when none answers, feeds both from one queue, makes missing character sheets first, uses the front views as references), writes `images\cNNNN\sNN-2k.jpg` (each picture as soon as it is drawn); with `--qa` it also checks each picture with the picture QA as soon as it is drawn (a failed one is redrawn once) and writes the status list `qa.json`. `--max N`: at most the first N pictures of each chapter. `--qa`: the picture QA this run (off by default). `--dry-run`: lists what is missing, starts nothing. With `images.engine: flow`, `novel images [--book B] [--ep N] [--chapters A-B] [--max N] [--batch K] [--resend ID] [--upgrade] [--quality 1K|2K] [--i-checked-flow] [--dry-run]` makes pictures in Flow. Without `--chapters` it takes the next `images.chapters_per_day` chapters that have work. `--max` caps pictures this run. `--batch K` sends K prompts side by side. `--resend c0021-s05` sends one picture again on purpose. `--upgrade` upgrades 1K pictures to 2K. `--quality 2K` (or `1K`) sets the download size for this run only; the default is `images.quality`, which is 1K. `--i-checked-flow` after a Flow stop. `--dry-run` shows what it would do and the command, runs nothing.
 
 ### novel ktrial
-The image server and the per-chapter work folder behind `novel images` (Qwen), also usable by hand for experiments (FLUX.3 klein, MiniMax-H3, Qwen). Everything is written to `<book>/_work/ktrial/cNNNN/`; only `charsheet` writes to the bible (`bible\qwen\`).
-- Picture QA: in `novel images` (Qwen) every picture is checked through OpenCode Go (`OPENCODE_API_KEY` in secrets.env) as soon as it is drawn, while the next one is drawn: the panel (Claude Haiku 5.5 + Qwen4 Max) checks it; any fail goes to the referee (Gemini 4 Argon), who keeps it or lists every problem; the picture is then redrawn at once with those fixes and the referee checks the redraw. The status list is `qa.json` next to the pictures (copied into the episode with them), updated at every step: each picture's state (`queued`, `drawing`, `checking`, `redrawing`, `rechecking`, then `pass`, `kept`, `fixed`, `failed`, `unchecked` or `draw_failed`), its tries (1, or 2 after a redraw) and what QA found. `novel images --no-qa` skips it for one run; `images.qa.enabled: false` turns it off.
+The image server and the per-chapter work folder behind `novel images` (Qwen), also usable by hand for experiments (FLUX.3 klein, MiniMax-H3, Qwen). Everything is written to `<book>/_work/ktrial/cNNNN/`; only `charsheet` and `front` write to the bible (`bible\qwen\`, `bible\qwen\front\`, and the `face` lines in `bible\characters.json`).
+- Picture QA: with `novel images --qa` (Qwen; off by default) every picture is checked through OpenCode Go (`OPENCODE_API_KEY` in secrets.env) as soon as it is drawn, while the next one is drawn: the panel (LongCat 2.5, free on Go, + Claude Haiku 5.5 on your Claude subscription; Qwen4 Max as spare) checks it; any fail goes to the referee (Claude Opus 5.5 on the subscription), who keeps it or lists every problem; the picture is then redrawn at once with those fixes and the referee checks the redraw. The status list is `qa.json` next to the pictures (copied into the episode with them), updated at every step: each picture's state (`queued`, `drawing`, `checking`, `redrawing`, `rechecking`, then `pass`, `kept`, `fixed`, `failed`, `unchecked` or `draw_failed`), its tries (1, or 2 after a redraw) and what QA found. Without `--qa` there is none; `images.qa.enabled: false` turns it off even with `--qa`.
 - `novel ktrial qa --chapter N [--status]`: `--status` prints the status list (one line per picture: state, tries, what QA found). Without it: the picture QA by hand of the pictures that have no verdict yet (needs the server, for redraws).
 - `novel ktrial qa-probe --chapter N [--picture FILE]`: sends one picture to every configured QA model and shows which answer.
-- `novel ktrial front --chapter N [--keys a,b] [--redo]`: one detailed front view per character (default: everyone with a Qwen sheet) into `<book>\bible\qwen\front\<key>_front.jpg`, 1088x1472, each with its own seed. Characters without a `face` line first get one from Gemini (face shape, nose, brows, build, age marks, a resting expression), 8 per call so the faces differ; a reworded bible look is printed. No picture QA: character pictures are a manual step, checked by eye. (`--chapter` only names the folder whose server is used.)
+- `novel ktrial front --chapter N [--keys a,b] [--redo]`: one detailed front view per character (default: everyone with a Qwen sheet) into `<book>\bible\qwen\front\<key>_front.jpg`, 1088x1472, each with its own seed, ID-photo head pose; these are the references of every picture. Characters without a `face` line first get one from Gemini (sex and age first, then face shape, nose, brows, build, age marks; plus a resting expression), 8 per call so the faces differ; a reworded bible look is printed. Drawn through the shared queue of both servers. No picture QA: character pictures are a manual step, checked by eye (see "Character pictures (front views)"). (`--chapter` only names the folder whose server is used.)
 - `novel ktrial charsheet --chapter N [--keys a,b] [--missing]`: makes Qwen character sheets on the running Qwen server (`--keys`: these bible keys; `--missing`: every referenced person of chapter N without a sheet). Text only, from the bible look, seed 202, into `<book>\bible\qwen\<key>_sheet_seed202.jpg` (+ `manifest.json`).
 - `novel ktrial scenes --chapter N [--book B] [--ep E] [--max-characters 2] [--from-production] [--force]`: asks Gemini for the chapter's picture lines with the close-framing rules. `--from-production` copies the existing scene file instead.
 - `novel ktrial prompts --chapter N`: writes the prompts, the place-plate prompts, the character references and `plan.json`. No GPU.
-- `novel ktrial up --chapter N [--account NAME] [--tunnel ngrok|cloudflared] [--domain HOST] [--idle-minutes 20] [--max-hours 6] [--gpu 1] [--comfy-arg=ARG] [--dry-run] [--no-wait]`: starts the ComfyUI server on Kaggle. With your ngrok dev domain (`--domain`, remembered in `<kaggle home>/ngrok-domain`, or `NOVEL_NGROK_DOMAIN`) the address is fixed and `up` waits until the server answers; without one it prints how to find the address on the notebook page.
+- `novel ktrial up --chapter N [--account NAME] [--tunnel ngrok|cloudflared] [--domain HOST] [--idle-minutes 20] [--max-hours 6] [--gpu 1] [--comfy-arg=ARG] [--servers 1|2] [--dry-run] [--no-wait]`: starts the ComfyUI server on Kaggle. With your ngrok dev domain (`--domain`, remembered in `<kaggle home>/ngrok-domain`, or `NOVEL_NGROK_DOMAIN`) the address is fixed and `up` waits until the server answers; without one it prints how to find the address on the notebook page.
   - `up --model flux|minimax-h3|qwen-image-turbo`: which model the server loads (default FLUX.3 klein). `run` then writes to `<trial>\minimax-h3\` or `<trial>\qwen-image-turbo\`, so the FLUX pictures stay. Qwen-Image-2.1-Turbo (INT8, 17.3 GB of files, 8 steps) gets the place background as its first reference, because it edits `image_1`.
   - `up --ngrok-dataset SLUG`: takes the ngrok token from another private Kaggle dataset of the account (file `NGROK_AUTHTOKEN`; default `ngrok-token`), for a second ngrok account. Give that account's own `--domain`; it is not remembered and the stored one is left alone.
-- `novel ktrial url --chapter N ADDRESS`: stores the server's address by hand when no fixed domain is set, then checks that it answers.
-- `novel ktrial status --chapter N`: Kaggle's state, the speed probe and the address.
-- `novel ktrial down --chapter N`: stops the server.
-- `novel ktrial run --chapter N [--only s05,g02] [--limit N] [--reroll] [--redo] [--plates-only] [--via kaggle|openrouter] [--resolution 1K|2K] [--budget D]`: makes the missing pictures (place plates first). `--reroll` tries the next seed, `--redo` the same seed again.
+  - `up --servers 1|2` (default: `images.servers`, 2): with Qwen, `up` starts TWO notebooks, each its own server, on two different Kaggle accounts (the second: `images.kaggle_profile_2`, else the next free account; Kaggle queues a second notebook on the same account). The second one (`<book>-ktrial-comfy-2`) uses no ngrok: its address is the Cloudflare tunnel `images.cf_hostname_2` (the Alt tunnel, token `kaggle/CLOUDFLARE_TUNNEL_TOKEN_2`), then a quick tunnel. `up` waits for the first only; the second joins the shared queue when it answers (a one-line note says why only one starts when `images.cf_hostname_2` or the token file is missing). Records: `server.json` and `server-2.json`. The notebooks no longer start a second ComfyUI on the other T4 (it never fit in RAM).
+- `novel ktrial url --chapter N ADDRESS`: stores the (first) server's address by hand when no fixed domain is set, then checks that it answers.
+- `novel ktrial status --chapter N`: Kaggle's state, the speed probe and the address, for `server 1:` and `server 2:`.
+- `novel ktrial down --chapter N`: stops every server.
+- `novel ktrial run --chapter N [--only s05,g02] [--limit N] [--reroll] [--redo] [--plates-only] [--via kaggle|openrouter] [--resolution 1K|2K] [--budget D]`: makes the missing pictures (place plates first). `--reroll` tries the next seed, `--redo` the same seed again. With two servers `run`, `novel images` and `front` feed one shared queue: whichever server is free takes the next job, a picture waits for its place plate, a QA redraw jumps the queue, and a server that stops answering hands its picture to the other. A server that answers later joins by itself. With picture QA the status list (`qa.json`) records which server drew each picture (`server`).
 - `novel ktrial report --chapter N`: `report.html`, each window's Flow picture beside the trial picture, with the panel cutouts.
 
 ### novel kllm
@@ -1010,8 +1039,9 @@ A coding LLM (Qwen3.6-35B-A3B, llama.cpp) on a Kaggle "GPU T4 x2" notebook, reac
 
 ### novel intro
 - `novel intro init --ep E --text-file F`: stores the Hindi hook (one paragraph per picture) in `extras\E9NNN`.
+- `novel intro shots --ep E [--redo]`: Claude (the scene writer, then the usual fallbacks) writes `shots.json`: one shot per paragraph, up to `images.max_characters` named people from those with a front view, each with where, pose and face. A bad answer is asked again once with its problems listed; an existing `shots.json` is kept unless `--redo` (the old one is kept as `shots.before-<stamp>.json`).
 - `novel intro images --ep E [--only s02] [--seed N] [--redo]`: Qwen pictures from `shots.json` on the running Kaggle ComfyUI.
-- `novel intro render --ep E`: the panels-style clip, no title card; `novel build` puts it first.
+- `novel intro render --ep E`: the clip, full screen with pan and zoom (Ken Burns), no title card; `novel build` puts it first.
 
 ### novel strip-heading
 `novel strip-heading [--ep E] [--chapters A-B] [--dry-run]`: removes the spoken "चैप्टर ...: ..." heading from chapters

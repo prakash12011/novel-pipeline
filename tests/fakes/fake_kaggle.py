@@ -121,7 +121,7 @@ def kernels(sub: str, args: list[str]) -> None:
         if not (src / meta["code_file"]).exists():
             die("code_file is missing from the kernel folder")
         for ds in meta["dataset_sources"]:
-            if ds.endswith(("/hf-token", "/ngrok-token")) or ds_dir(ds).exists():
+            if ds.endswith(("/hf-token", "/ngrok-token", "/cloudflare-tunnel", "/cloudflare-tunnel-2")) or ds_dir(ds).exists():
                 continue
             die(f"403 Forbidden: dataset {ds} not found")
         write_json(kernel_file(meta["id"]), {"polls": 0, "sources": meta["dataset_sources"]})

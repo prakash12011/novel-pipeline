@@ -33,6 +33,11 @@ USER_AGENT = "novel-pipeline-qa/1.0"     # Go asks direct clients for their own 
 QA_WIDTH = 1024                          # the long side sent: enough to see faces and hands, a third of the tokens
 MAX_TOKENS = 3000                        # room for a reasoning model's thinking before the JSON
 LIMIT_STATUS = (402, 403, 429)           # quota or allowance used up: the model sits out the rest of the run
+OPENROUTER = "openrouter:"               # a model id with this prefix is asked through OpenRouter (its free models)
+CLAUDE = "claude:"                       # ... through headless Claude Code on the subscription (`claude:claude-haiku-5-5`)
+CLAUDE_MAX_TOKENS = 8000                 # room for Claude's thinking before the JSON
+CLAUDE_TIMEOUT = 300                     # seconds for one picture check
+OPENROUTER_URL = "https://openrouter.ai/api/v1"
 KINDS = ("duplicate_person", "people_count", "anatomy", "face", "text", "prompt", "style")
 
 CHECKLIST = """You check one illustration made by an image model for an anime-style YouTube story recap. You get the \
@@ -72,7 +77,12 @@ def find_key() -> str:
     return os.environ.get(KEY_VAR, "").strip() or secrets.load().get(KEY_VAR, "").strip()
 
 
-def small_jpeg(path: Path, width: int = QA_WIDTH) -> bytes:
+class Jpeg(bytes):
+    """The scaled picture sent to the Go models; it remembers its file, which Claude (headless) reads in place."""
+    path: Path | None = None
+
+
+def small_jpeg(path: Path, width: int = QA_WIDTH) -> Jpeg:
     """The picture with its long side at most `width`, as JPEG."""
     from PIL import Image
     with Image.open(path) as im:
@@ -80,7 +90,9 @@ def small_jpeg(path: Path, width: int = QA_WIDTH) -> bytes:
         im.thumbnail((width, width))
         buf = io.BytesIO()
         im.save(buf, "JPEG", quality=85)
-    return buf.getvalue()
+    out = Jpeg(buf.getvalue())
+    out.path = Path(path)
+    return out
 
 
 def parse_verdict(text: str) -> dict:
@@ -114,27 +126,34 @@ def _post(base: str, key: str, body: dict, timeout: float = 180) -> dict:
 class QA:
     """The panel, the spares and the referee of images.qa, on one key. `post` is replaced in tests."""
 
-    def __init__(self, cfg: dict, key: str, post=_post, say=print):
+    def __init__(self, cfg: dict, key: str, post=_post, say=print, claude=None):
         self.panel = list(cfg.get("panel") or [])[:3]
         self.spare = list(cfg.get("spare") or [])
         self.referee = cfg.get("referee")
         self.base = cfg.get("base_url") or BASE_URL
         self.key, self.post, self.say = key, post, say
+        self.claude = claude                  # model -> client with .generate(); None: kclaude.ClaudeHeadless (tests replace it)
         self.out_of_quota: set[str] = set()
         self.calls = 0
 
     def ask(self, model: str, jpeg: bytes, brief: str, note: str = "") -> dict:
         """One stateless check by one model: its verdict, or QAError / LimitReached."""
         text = f"THE PROMPT:\n{brief}" + (f"\n\n{note}" if note else "")
+        if model.startswith(CLAUDE):
+            return self._ask_claude(model, jpeg, text)
         body = {"model": model, "temperature": 0, "max_tokens": MAX_TOKENS, "messages": [
             {"role": "system", "content": CHECKLIST},
             {"role": "user", "content": [
                 {"type": "text", "text": text},
                 {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()}}]}]}
+        base, key = self.base, self.key
+        if model.startswith(OPENROUTER):          # a free model of OpenRouter (`openrouter:nvidia/...:free`)
+            from novel import korouter
+            base, key, body = OPENROUTER_URL, korouter.find_key(), dict(body, model=model[len(OPENROUTER):])
         for attempt in range(3):
             self.calls += 1
             try:
-                r = self.post(self.base, self.key, body)
+                r = self.post(base, key, body)
             except urllib.error.HTTPError as e:
                 if e.code in LIMIT_STATUS:
                     self.out_of_quota.add(model)
@@ -154,6 +173,24 @@ class QA:
                 return dict(parse_verdict(content), model=model)
             time.sleep(3 * (attempt + 1))
         raise QAError(f"{model}: no answer")
+
+    def _ask_claude(self, model: str, jpeg: bytes, text: str) -> dict:
+        """The same check through headless Claude Code (the subscription, not Go's allowance): Claude reads the picture
+        file with its Read tool. A usage limit counts as out of allowance, so the next spare stands in."""
+        from novel import kclaude
+        path = getattr(jpeg, "path", None)
+        if path is None:
+            raise QAError(f"{model}: Claude reads the picture file, and this picture has none (use small_jpeg(path))")
+        self.calls += 1
+        try:
+            client = (self.claude or (lambda m: kclaude.ClaudeHeadless(m, timeout=CLAUDE_TIMEOUT)))(model[len(CLAUDE):])
+            r = client.generate(CHECKLIST, text, image=path, max_output_tokens=CLAUDE_MAX_TOKENS)
+        except kclaude.ClaudeError as e:
+            if re.search(r"limit|quota|usage", str(e), re.I):
+                self.out_of_quota.add(model)
+                raise LimitReached(f"{model}: {str(e)[:160]}") from None
+            raise QAError(f"{model}: {str(e)[:200]}") from None
+        return dict(parse_verdict(r.text), model=model)
 
     def _try(self, model: str, jpeg: bytes, brief: str, note: str = "") -> dict:
         try:
@@ -205,6 +242,41 @@ class QA:
         return {"pass": j["pass"], "votes": j["votes"], "issues": j["issues"]}
 
 
+class OpenCodeChat:
+    """Text through OpenCode Go (chat completions), shaped like episode_translate.Gemini.generate so the writers can use
+    it (`novel ktrial scenes --writer haiku`). One single-turn request per call, a new session id each time."""
+
+    def __init__(self, model: str, key: str | None = None, base: str = BASE_URL, post=None, timeout: float = 900):
+        self.model, self.key, self.base = model, key or find_key(), base
+        self.post = post or (lambda b, k, body: _post(b, k, body, timeout=timeout))
+        if not self.key:
+            raise QAError(f"no {KEY_VAR}: add it to secrets.env")
+        self.allowance = 0.0                    # list-price dollars of the Go allowance used by this client
+
+    def generate(self, system: str, text: str, *, temperature: float = 0.3, max_output_tokens: int = 32000,
+                 json_out: bool = False):
+        from novel.stages.episode_translate import GenResult
+        t0 = time.monotonic()
+        r = self.post(self.base, self.key, {"model": self.model, "temperature": temperature,
+                                            "max_tokens": max_output_tokens,
+                                            "messages": [{"role": "system", "content": system},
+                                                         {"role": "user", "content": text}]})
+        try:
+            ch = r["choices"][0]
+            out = ch["message"]["content"] or ""
+        except (KeyError, IndexError, TypeError):
+            raise QAError(f"{self.model}: the answer holds no text: {str(r)[:300]}") from None
+        if isinstance(out, list):
+            out = "".join(p.get("text", "") for p in out if isinstance(p, dict))
+        u = r.get("usage") or {}
+        self.allowance += float(((u.get("opencode") or {}).get("allowance")) or 0)
+        return GenResult(text=out, finish="MAX_TOKENS" if ch.get("finish_reason") == "length" else "STOP",
+                         model=self.model, key=0, seconds=round(time.monotonic() - t0, 1),
+                         usage={"promptTokenCount": u.get("prompt_tokens", 0),
+                                "candidatesTokenCount": u.get("completion_tokens", 0),
+                                "allowance": (u.get("opencode") or {}).get("allowance")})
+
+
 def fix_lines(issues: list[dict]) -> str:
     """The redraw's extra prompt text: every issue as one instruction."""
     fixes = []
@@ -234,6 +306,7 @@ class Live:
         self.rec = json.loads(self.record.read_text(encoding="utf-8")) if self.record.exists() else {}
         self.lock = threading.Lock()
         self.pool = ThreadPoolExecutor(parallel)
+        self.checks = 0                                             # checks in flight (handed over, not yet finished)
 
     def _save(self) -> None:
         self.record.parent.mkdir(parents=True, exist_ok=True)
@@ -264,10 +337,22 @@ class Live:
         with self.lock:
             e = self.rec.setdefault(it["id"], {"tries": 0})
             e["tries"] = e.get("tries", 0) + 1
+            self.checks += 1
         self.set(it["id"], "checking")
         self.pool.submit(self._run, it)
 
+    def busy(self) -> int:
+        """How many checks are still going (one may ask for a redraw), so the drawing side must not shut down yet."""
+        return self.checks
+
     def _run(self, it: dict) -> None:
+        try:
+            self._check(it)
+        finally:
+            with self.lock:
+                self.checks -= 1
+
+    def _check(self, it: dict) -> None:
         ident, path = it["id"], Path(it["path"])
         try:
             j = self.qa.judge(small_jpeg(path), it["brief"])

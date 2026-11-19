@@ -5,13 +5,18 @@ images:
   engine: qwen       # qwen: Qwen-Image-2.1-Turbo on the Kaggle ComfyUI (novel images); flow: Google Flow in Chrome
   kaggle_profile: null   # the image server's preferred Kaggle account (kaggle.pick_free may choose another)
   cf_hostname: null      # a named Cloudflare tunnel's public hostname: the image server's primary address (ngrok is the fallback)
+  cf_hostname_2: null    # the second notebook's named Cloudflare tunnel hostname (it uses no ngrok)
+  kaggle_profile_2: null # the second notebook's preferred account (never the first's: Kaggle would queue it)
+  cf_hostname_3: null    # a third named Cloudflare tunnel (token kaggle/CLOUDFLARE_TUNNEL_TOKEN_3), for a third notebook
+  servers: 2             # how many Kaggle notebooks `novel ktrial up` starts (each one a ComfyUI server; one shared queue)
+  split_encoder: false   # Qwen: the text encoder on each notebook's second T4 (under test on shashi, 2026-11-18)
   flow_project: null
   flow_model: "Nano Banana Pro"
   allow_agent: false
   paced_seconds: 7.0
   max_seconds: 7.5
   chars_per_second: 15.3
-  max_characters: 2   # named people per picture (Qwen keeps two faces apart reliably; Flow took 4)
+  max_characters: 4   # named people per picture (Qwen kept 3 apart in the chapter 21 trial; Flow took 4)
   chapters_per_day: 3
   max_per_run: 200
   batch: 5
@@ -27,12 +32,12 @@ images:
   qa:               # picture QA through OpenCode Go (OPENCODE_API_KEY in secrets.env; skipped without it)
     enabled: true
     base_url: https://opencode.ai/inference/go/v1
-    panel: [claude-haiku-5-5, qwen4-max]   # first check, asked at once (at most 3); chosen on 12 labelled pictures 2026-11-18
-    spare: [qwen3.7-plus]                  # stands in for a used-up panel model (catches all, but fails good ones too)
-    referee: gemini-4-argon                      # settles a panel fail, lists the fixes, checks the redraw
+    panel: [longcat-2.5-free, "claude:claude-haiku-5-5"]   # first check, at once (at most 3): LongCat is free on Go; claude:<model> = headless Claude Code on the subscription (reads the picture file in place); 2026-11-19
+    spare: [qwen4-max]   # stands in for a panel model that is out (Go allowance used up, or a Claude usage limit)
+    referee: "claude:claude-opus-5-5"            # settles a panel fail, lists the fixes, checks the redraw (subscription; needs Claude Code 2.1.280 or newer: `claude update`)
 video:
   fps: 24
-  style: kenburns   # kenburns (one full-screen picture at a time) or panels (comic panels the camera slides between)
+  style: panels   # kenburns (one full-screen picture at a time) or panels (comic panels the camera slides between)
   panels: {paper: "#f3f0e8", dim: 0.45, captions: true}   # captions: lettered inside the active panel (not video.captions)
   logo: {enabled: false, file: assets/logo.png, position: top-left, margin: 26, opacity: 1.0, width: null}
   disclaimer: {enabled: true, seconds: 2.0, heading: "COPYRIGHT & AI DISCLAIMER", text: null}
@@ -49,7 +54,10 @@ video:
   hd: {enabled: auto}
 gemini: {api_model: gemini-3.5-flash-lite, chapters_per_run: 5, parallel: 1, max_attempts_per_block: 3, fallback_models: [], min_seconds_between_calls: 4,
          free_tier: {enabled: true, per_minute: 5, per_day: 20},   # per key; all spent -> OpenRouter
-         force_openrouter: false}   # true (or NOVEL_FORCE_OPENROUTER=1): every Gemini call goes to OpenRouter
+         force_openrouter: false,   # true (or NOVEL_FORCE_OPENROUTER=1): every Gemini call goes to OpenRouter
+         opencode_fallback: gemini-4-argon,   # free keys spent -> this model on OpenCode Go -> OpenRouter; null = skip
+         scene_writer: claude,           # scene lines: claude = Claude first (then free keys, Argon, OpenRouter); gemini
+         scene_claude: claude-sonnet-5-5}   # Claude's model, via headless Claude Code on the logged-in subscription; null = none
 qa: {reviewer: claude, fallback: gemini, parallel: 3, omission_ratio: 0.45}
 translate: {target_words: 900, words_tolerance: 0.20, max_attempts: 4}
 publish: {title_template: null, description_template: null, tags: [], hashtags: [], playlist_url: null, category: Entertainment, research_seeds: [], ai: claude}

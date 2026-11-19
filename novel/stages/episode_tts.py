@@ -108,6 +108,18 @@ def default_chapters(episode: int) -> list[int]:
             if is_locked(ep_root, c.idx) and not has_valid_audio(ep_root, c)]
 
 
+def intro_pending(episode: int) -> tuple[Path, int] | None:
+    """The episode's intro/recap (pseudo-episode extras/E9NNN, `novel intro init`) when its Hindi is locked and has no
+    audio yet: (its folder, the idx it travels under in the push). That idx is 9000 + the episode number: the
+    intro's own chapter 1 would meet chapter 1 of episode 1. Same Kaggle run as the chapters: one venv build, one
+    model load."""
+    if episode >= E.EXTRAS_FROM or not (E.root(9000 + episode) / "manifest.json").exists():
+        return None
+    r = E.root(9000 + episode)
+    c = Manifest.load(r / "manifest.json").chapters[0]
+    return (r, 9000 + episode) if is_locked(r, c.idx) and not has_valid_audio(r, c) else None
+
+
 def state_path(episode: int) -> Path:
     return E.root(episode) / "tts-state.json"
 
@@ -154,7 +166,7 @@ def write_config(dest: Path, episode: int) -> None:
     dest.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
 
-def stage(episode: int, chapters: list[int], user: str, marker: str) -> Path:
+def stage(episode: int, chapters: list[int], user: str, marker: str, intro=None) -> Path:
     ep_root = E.root(episode)
     man = Manifest.load(ep_root / "manifest.json")
     rows = [c for c in man.chapters if c.idx in chapters]
@@ -168,15 +180,24 @@ def stage(episode: int, chapters: list[int], user: str, marker: str) -> Path:
         shutil.rmtree(st)
     (st / "hindi").mkdir(parents=True)
     slice_ch = []
-    for c in rows:
-        shutil.copy2(ep_root / "hindi" / f"{c.idx:05d}.txt", st / "hindi")
+
+    def row(idx, title, source):
         # Always "translated": a "failed" row would send runner.py into the
         # translation path, which this kernel has no model for.
-        slice_ch.append({"idx": c.idx, "title": c.title, "source": c.source,
-                         "status": "translated", "hindi": f"{c.idx:05d}.txt",
-                         "audio": None, "timing": None, "seconds": None, "error": None,
-                         "attempts": 0, "translate_seconds": None, "tts_seconds": None,
-                         "rtf": None})
+        return {"idx": idx, "title": title, "source": source,
+                "status": "translated", "hindi": f"{idx:05d}.txt",
+                "audio": None, "timing": None, "seconds": None, "error": None,
+                "attempts": 0, "translate_seconds": None, "tts_seconds": None,
+                "rtf": None}
+
+    for c in rows:
+        shutil.copy2(ep_root / "hindi" / f"{c.idx:05d}.txt", st / "hindi")
+        slice_ch.append(row(c.idx, c.title, c.source))
+    if intro:
+        iroot, iidx = intro
+        shutil.copy2(iroot / "hindi" / "00001.txt", st / "hindi" / f"{iidx:05d}.txt")
+        slice_ch.append(row(iidx, "Intro", "0001_intro.txt"))
+        chapters = [*chapters, iidx]
     (st / "manifest.json").write_text(json.dumps(
         {"version": 1, "chapters": slice_ch}, ensure_ascii=False, indent=1), encoding="utf-8")
     shutil.copytree(REPO / "kaggle" / "payload" / "abpipe", st / "abpipe",
@@ -241,7 +262,9 @@ def cmd_push(args) -> int:
     if blocked and not args.dry_run:
         sys.exit(msg)
     chapters = parse_range(args.chapters) if args.chapters else default_chapters(args.episode)
-    if not chapters:
+    # the recap/intro goes in the same run, unless chapters were named or --no-intro
+    intro = None if args.chapters or getattr(args, "no_intro", False) else intro_pending(args.episode)
+    if not chapters and not intro:
         print("nothing to narrate: no chapter is locked and still without audio")
         return 0
     from novel.core import settings
@@ -249,9 +272,10 @@ def cmd_push(args) -> int:
     profile = args.account or free_profile(settings.get("tts.kaggle_profile", default=None))
     user = owner(profile)
     marker = f"push-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}.txt"
-    st = stage(args.episode, chapters, user, marker)
+    st = stage(args.episode, chapters, user, marker, intro)
     kd = stage_kernel(args.episode, user)
-    print(f"staged chapters {','.join(map(str, chapters))} for {user} (profile {profile})")
+    print(f"staged chapters {','.join(map(str, chapters))}{' and the intro/recap' if intro else ''} "
+          f"for {user} (profile {profile})")
     if args.dry_run:
         print(f"dry run - nothing is called. Would upload dataset {user}/{slug(args.episode)} "
               f"and push kernel {user}/{kernel_slug(args.episode)}:")
@@ -272,6 +296,8 @@ def cmd_push(args) -> int:
     print("  " + [l for l in out.splitlines() if "pushed" in l][0].strip())
     new = {"account": profile, "user": user, "chapters": chapters,
            "marker": marker, "pushed": marker[5:-4], "pulled": False}
+    if intro:
+        new["intro"] = intro[1]
     if state.get("history"):
         new["history"] = state["history"]          # abandoned runs stay on record
     save_state(args.episode, new)
@@ -348,21 +374,26 @@ def cmd_pull(args) -> int:
     remote = {c["idx"]: c for c in json.loads(
         (out / "manifest.json").read_text(encoding="utf-8"))["chapters"]}
     hashes = json.loads((out / "hashes.json").read_text(encoding="utf-8"))
-    lock = json.loads(E.lock_path(ep_root).read_text(encoding="utf-8"))
-    (ep_root / "audio").mkdir(exist_ok=True)
-    (ep_root / "timing").mkdir(exist_ok=True)
 
+    # (manifest, folder, chapter, idx in the run): the episode's chapters, then the intro/recap that travelled with them
+    jobs = [(man, ep_root, c, c.idx) for c in man.chapters if c.idx in state["chapters"]]
+    if state.get("intro"):
+        iroot = E.root(state["intro"])
+        iman = Manifest.load(iroot / "manifest.json")
+        jobs.append((iman, iroot, iman.chapters[0], state["intro"]))
     took = 0
-    for c in man.chapters:
-        if c.idx not in state["chapters"]:
-            continue
-        name = f"{c.idx:05d}"
-        r = remote.get(c.idx, {})
+    for m_, root_, c, ridx in jobs:
+        name, rname = f"{c.idx:05d}", f"{ridx:05d}"      # in the episode / in the run (they differ for the intro)
+        tag = f"{c.idx:>3}" if root_ is ep_root else "intro"
+        lock = json.loads(E.lock_path(root_).read_text(encoding="utf-8"))
+        (root_ / "audio").mkdir(exist_ok=True)
+        (root_ / "timing").mkdir(exist_ok=True)
+        r = remote.get(ridx, {})
         problems = []
         if r.get("status") != DONE:
             problems.append(f"status {r.get('status')}: {(r.get('error') or '')[-200:]}")
-        mp3, tmap = out / "audio" / f"{name}.mp3", out / "timing" / f"{name}.json"
-        if hashes.get(f"{name}.txt") != lock.get(f"{name}.txt"):
+        mp3, tmap = out / "audio" / f"{rname}.mp3", out / "timing" / f"{rname}.json"
+        if hashes.get(f"{rname}.txt") != lock.get(f"{name}.txt"):
             problems.append("narrated text is not the locked text")
         if not problems:
             if not mp3.exists() or not tmap.exists():
@@ -379,19 +410,21 @@ def cmd_pull(args) -> int:
                 if bitrate < 120_000:
                     problems.append(f"bitrate {bitrate} - expected 128k")
         if problems:
-            print(f"  {c.idx:>3}  NOT TAKEN: {'; '.join(problems)}")
+            print(f"  {tag}  NOT TAKEN: {'; '.join(problems)}")
             continue
-        shutil.copy2(mp3, ep_root / "audio" / f"{name}.mp3")
-        shutil.copy2(tmap, ep_root / "timing" / f"{name}.json")
+        shutil.copy2(mp3, root_ / "audio" / f"{name}.mp3")
+        shutil.copy2(tmap, root_ / "timing" / f"{name}.json")
         c.audio, c.timing, c.status = f"{name}.mp3", f"{name}.json", DONE
         c.seconds, c.tts_seconds, c.rtf = r["seconds"], r["tts_seconds"], r["rtf"]
         took += 1
-        print(f"  {c.idx:>3}  ok  {c.seconds / 60:.1f} min  RTF {c.rtf}")
-    man.save()
+        print(f"  {tag}  ok  {c.seconds / 60:.1f} min  RTF {c.rtf}")
+    for m_ in {id(m): m for m, *_ in jobs}.values():
+        m_.save()
     state["pulled"] = True
     save_state(args.episode, state)
-    print(f"{took}/{len(state['chapters'])} chapters brought home")
-    return 0 if took == len(state["chapters"]) else 1
+    want = len(state["chapters"]) + (1 if state.get("intro") else 0)
+    print(f"{took}/{want} chapters brought home")
+    return 0 if took == want else 1
 
 
 def cmd_watch(args) -> int:

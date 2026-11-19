@@ -145,13 +145,14 @@ def running_kernels(profile: str) -> list[str]:
     return [r for r in refs if re.search(r"RUNNING|QUEUED", kaggle_as(profile, "kernels", "status", r), re.I)]
 
 
-def free_profile(prefer: str | None = None, say=print) -> str:
+def free_profile(prefer: str | None = None, say=print, skip=()) -> str:
     """With kaggle.pick_free: the first Kaggle account with nothing running, `prefer` first, then the accounts of
-    settings kaggle.profiles in order (two jobs never share an account's GPU). Without it: resolve_profile(prefer)."""
+    settings kaggle.profiles in order (two jobs never share an account's GPU), never one in `skip`. Without it:
+    resolve_profile(prefer)."""
     from novel.core import settings
     if not settings.get("kaggle.pick_free", default=False):
         return resolve_profile(prefer)
-    names = list(load_profiles()["profiles"])
+    names = [n for n in load_profiles()["profiles"] if n not in skip]
     for name in ([prefer] if prefer in names else []) + [n for n in names if n != prefer]:
         busy = running_kernels(name)
         say(f"Kaggle account {name}: " + (f"busy ({', '.join(busy)})" if busy else "free"))

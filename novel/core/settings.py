@@ -24,6 +24,7 @@ CHAPTER_SCOPE = (
     "video.subscribe",
     "video.subscribe.silent_after",
     "video.captions",
+    "video.panels.captions",
     "images.max_seconds",
     "images.paced_seconds",
 )

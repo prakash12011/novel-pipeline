@@ -71,6 +71,10 @@ def main(argv) -> int:
             return 2
         runner = W.Runner(book, ep, a)
         if a.recap:
+            if a.dry_run:        # the recap has no dry-run of its own: it used to send and overwrite recap.txt
+                print(f"Dry run: would write the recap of episode {ep} (up to 3 calls) to "
+                      f"{runner.ep_root / 'recap.txt'}; nothing sent, nothing written.")
+                return 0
             return runner.recap_only()
         if a.fix is not None:
             return runner.run_fix(a.fix)

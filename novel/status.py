@@ -622,9 +622,10 @@ def missing_list(rows: list[dict], info: dict, ep: int, book: str, state_book, s
         elif locked and r["scenes_state"] == "BAD":
             g.add("scenes", n, f"scenes are not usable ({r['scenes_problem']})",
                   "novel write --redo {ch}", single_range=True, after=REDO_BY_HAND)
-        if r["qa"] == "stale":
-            g.add("qa", n, "QA is out of date (the Hindi or the scenes changed after it ran)",
-                  "novel qa --chapters {ch}", single_range=True, ep_flag=False)
+        # QA is optional and run by hand: an out-of-date QA no longer blocks the build (the table still shows "stale").
+        # if r["qa"] == "stale":
+        #     g.add("qa", n, "QA is out of date (the Hindi or the scenes changed after it ran)",
+        #           "novel qa --chapters {ch}", single_range=True, ep_flag=False)
         if r["qa"] == "FIX":
             g.add("qa", n, f"QA says FIX ({_plural(r['qa_errors'], 'error')})", "novel qa --fix-prompt {ch}", ep_flag=False)
         for m in r["chars_missing"]:

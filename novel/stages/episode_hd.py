@@ -102,19 +102,42 @@ def _stop_backends() -> None:
                     "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"], capture_output=True)
 
 
-def run_chain(chain: dict, work: Path) -> None:
+STALL_SECONDS = 240   # chaiNNer sometimes hangs right after it starts (0 CPU, nothing written): no new picture this long = killed
+DONE_SECONDS = 20     # all expected pictures written and nothing new this long: done, kill the process that will not exit
+TRIES = 3
+
+
+def run_chain(chain: dict, work: Path, expected: int = 0) -> None:
     path = work / "chain.chn"
     path.write_text(json.dumps(chain, separators=(",", ":")), encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k != "ELECTRON_RUN_AS_NODE"}   # set inside VS Code; breaks Electron
-    try:
-        p = subprocess.run([str(CHAINNER), "run", str(path)], env=env, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace")
-    finally:
-        _stop_backends()
-    (work / "chainner.log").write_text(p.stdout + "\n--- stderr ---\n" + p.stderr, encoding="utf-8")
-    if p.returncode:
-        tail = "\n".join((p.stdout + p.stderr).strip().splitlines()[-25:])
-        raise SystemExit(f"chaiNNer failed (exit {p.returncode}); log: {work / 'chainner.log'}\n{tail}")
+    out_dir, log = work / "out", work / "chainner.log"
+    for attempt in range(1, TRIES + 1):
+        with open(log, "w", encoding="utf-8", errors="replace") as lf:
+            p = subprocess.Popen([str(CHAINNER), "run", str(path)], env=env, stdout=lf, stderr=subprocess.STDOUT)
+            last, since = -1, time.time()
+            try:
+                while p.poll() is None:
+                    time.sleep(5)
+                    n = len(list(out_dir.glob("*.jpg"))) if out_dir.exists() else 0
+                    if n != last:
+                        last, since = n, time.time()
+                    elif expected and n >= expected and time.time() - since > DONE_SECONDS:
+                        p.kill()                        # every picture is written; chaiNNer sometimes never exits
+                        p.wait()
+                        return
+                    elif time.time() - since > STALL_SECONDS:
+                        p.kill()
+                        break
+            finally:
+                _stop_backends()
+        if p.returncode == 0:
+            return
+        if time.time() - since > STALL_SECONDS and attempt < TRIES:
+            print(f"  chaiNNer stalled (no new picture in {STALL_SECONDS} s): killed, trying again ({attempt}/{TRIES})")
+            continue
+        tail = "\n".join(log.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-25:])
+        raise SystemExit(f"chaiNNer failed (exit {p.returncode}); log: {log}\n{tail}")
 
 
 # ---------- which images, and how much to cut ----------
@@ -300,9 +323,9 @@ def make_hd(ep_root: Path, chapters: list[int], *, limit: int | None = None, for
             base = {"left": 0, "right": 0, "bottom": 0, "width": w, "height": h}
         by_crop: dict[tuple, list] = {}
         for src, dest in all_items:                            # second trim for any image with a star left in it
-            mx, my, score = find_mark(src)
             star = None
-            if mode != "none":
+            if mode != "none":          # none (Qwen pictures carry no mark): no mark search, no crop, only the upscale
+                mx, my, score = find_mark(src)
                 star = find_painted_star(src, (mx, my)) if score > 0.6 else find_painted_star(src, (0.95, 0.91))
             crop = base
             if star:
@@ -336,7 +359,7 @@ def make_hd(ep_root: Path, chapters: list[int], *, limit: int | None = None, for
                 shutil.copy2(src, src_dir / f"{key}.jpg")
                 names[key] = dest
             started = time.time()
-            run_chain(build_chain(src_dir, out_dir, crop, upscale), work)
+            run_chain(build_chain(src_dir, out_dir, crop, upscale), work, expected=len(items))
             for key, dest in names.items():
                 made = out_dir / f"{key}.jpg"
                 if not made.exists():

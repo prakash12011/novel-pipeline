@@ -31,7 +31,7 @@ RESEARCH_PHRASES_FOR_AI = 20
 GENERIC_QUESTION = "Comment mein batao: aapko kya lagta hai, aage kya hoga?"
 
 # The command line used when NOVEL_CLAUDE_CMD is not set (the CLI is found on PATH).
-CLAUDE_ARGS = ["-p", "--model", "sonnet", "--output-format", "json", "--tools", "",
+CLAUDE_ARGS = ["-p", "--model", "claude-opus-5-5", "--output-format", "json", "--tools", "",
                "--no-session-persistence", "--disable-slash-commands"]
 
 CHAPTER_FILE = re.compile(r"^(\d+)_")
@@ -293,7 +293,10 @@ Return ONLY this JSON object, no other text:
 
 def build_prompt(*, book_title: str, ep: int, start: int, end: int, condensed: str, sent_chars: int,
                  research: list[str], idea: str | None, errors: list[str] | None = None) -> str:
-    parts = [RULES, f"BOOK: {book_title}", f"EPISODE: {ep} (Chapter {start} to {end})"]
+    parts = [RULES, "HOOK: make the title, the teaser and the thumbnail lines addictive: an open question or a stake "
+                    "the viewer must see answered, a concrete image instead of a summary, no spoiler of the ending and "
+                    "no claim the episode does not deliver. Never mention chapters anywhere (no \"Chapter N\", \"Ch N\", ranges).",
+             f"BOOK: {book_title}", f"EPISODE: {ep} (Chapter {start} to {end})"]
     if idea:
         parts.append(f"TEASER IDEA from the channel owner (use it as the direction, polish it): {idea}")
     if research:

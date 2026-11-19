@@ -53,20 +53,32 @@ from .episode_render import FPS, H, LEAD, TAIL, W
 
 # ------------------------------------------------------------------ shapes and layout constants
 
-SHAPES = {"wide": 16 / 9, "landscape": 4 / 3, "square": 1.0, "portrait": 3 / 4, "tall": 2 / 3}   # width / height
-ALTERNATE = {"portrait": "tall", "tall": "portrait", "landscape": "square", "square": "landscape",
-             "wide": "landscape"}
-NARROW = ("portrait", "tall")
+# Only two sizes for now: "wide" (the full 16:9 picture) and "landscape" (4:3, one size below it). The others
+# are kept, switched off; to bring them back restore these three lines and the shape_for rules below.
+# SHAPES = {"wide": 16 / 9, "landscape": 4 / 3, "square": 1.0, "portrait": 3 / 4, "tall": 2 / 3}   # width / height
+# ALTERNATE = {"portrait": "tall", "tall": "portrait", "landscape": "square", "square": "landscape", "wide": "landscape"}
+# NARROW = ("portrait", "tall")
+SHAPES = {"wide": 16 / 9, "landscape": 4 / 3}          # width / height
+ALTERNATE = {"landscape": "wide", "wide": "landscape"}
+NARROW = ()                                            # no upright panels: NARROW_MOVES / MAX_PORTRAIT_PER_PAGE idle
+SWITCHED_OFF = {"square": "landscape", "portrait": "landscape", "tall": "landscape"}   # a scene's old "panel" key
 
-ROW_H = 1012           # panel height: 34 px of paper above and below it on screen
-ROW_W = 2750           # every full row is justified to exactly this, gutters included
-GUTTER = 30            # between the panels of a row
-ROW_GAP = 40           # between the two rows of a page: more than the 34 px left on screen, so at
-                       # rest nothing of the other row shows at the top or bottom edge
+# One row per page; a panel is 95% of the screen (1026 of 1080 px high, a wide one 1823 of 1920 px wide), so
+# the next panel peeks in by only GUTTER-wide paper plus the ~24 px of screen the wide panel leaves each side.
+# Before (two rows per page, 94% high): ROW_H 1012, ROW_W 2750, GUTTER 30, ROW_GAP 40, PAGE_MARGIN 34, MAX_PANEL_W 1860.
+ROW_H = 1026           # panel height: 27 px of paper above and below it on screen
+ROW_W = 6400           # only the justified layout (_layout_justified, switched off) uses this
+GUTTER = 24            # between the panels of a row
+ROW_GAP = 14           # between rows: less than the 27 px left on screen, so the next row peeks in by ~13 px
 BORDER = 4             # drawn inside the panel's rect
 ROWS_PER_PAGE = 2
-PAGE_MARGIN = 34       # paper around the panels: an edge panel gets the same margin as above and below
-MAX_PANEL_W = 1860     # 30 px of paper each side of the widest panel on screen
+PAGE_PANELS = 6        # a sheet holds six pictures, in two rows of ROW_PANELS (three) each
+ROW_PANELS = 3
+# Rows of one sheet, picked at random (the same for the same chapter): a row may hold a single panel.
+ASPECT_RANGE = {"wide": (1.62, 16 / 9), "landscape": (4 / 3, 1.5)}   # width / height a panel of this shape may take
+ROW_PATTERNS = [(2, 2, 2), (3, 1, 2), (1, 3, 2), (2, 1, 3), (2, 3, 1), (1, 2, 3), (3, 2, 1)]
+PAGE_MARGIN = 27       # paper around the panels: an edge panel gets the same margin as above and below
+MAX_PANEL_W = 1824     # 48 px of the screen left each side of the widest panel: gutter plus a ~24 px peek
 STRETCH_MIN, STRETCH_MAX = 0.82, 1.25   # one factor per row, applied to its panels' natural widths
 MAX_ROW_PANELS = 6
 MAX_PORTRAIT_PER_PAGE = 2   # a page holds at most this many upright panels (portrait or tall, see NARROW)
@@ -114,19 +126,19 @@ FONT = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "NotoSans-Semi
 def shape_for(scene: dict) -> str:
     """The panel shape for one scene: from its cast and shot, or its "panel" key."""
     if scene.get("panel") is not None:
-        if scene["panel"] not in SHAPES:
+        p = SWITCHED_OFF.get(scene["panel"], scene["panel"])
+        if p not in SHAPES:
             raise SystemExit(f"scene {scene.get('id')}: panel {scene['panel']!r} is not one of "
                              f"{', '.join(SHAPES)}")
-        return scene["panel"]
+        return p
     n = len(scene.get("characters") or [])
     shot = scene.get("shot", "")
-    if n == 1:
-        return "tall" if shot in ("close-up", "low-angle", "high-angle") else "portrait"
+    # Switched off: one character -> "tall" (close-up, low-angle, high-angle) or "portrait"; no cast -> "square".
     if n == 2:
         return "wide" if shot == "over-the-shoulder" else "landscape"
     if n >= 3:
         return "wide"
-    return "wide" if shot in ("establishing", "wide") else "square"
+    return "wide" if shot in ("establishing", "wide") else "landscape"
 
 
 def shapes(scenes: list[dict]) -> list[str]:
@@ -153,12 +165,12 @@ def shapes(scenes: list[dict]) -> list[str]:
 # ------------------------------------------------------------------ layout
 
 
-def _row_fit(nat: list[float], last: bool) -> tuple[float, list[float], bool]:
+def _row_fit(nat: list[float], last: bool, row_w: int = ROW_W) -> tuple[float, list[float], bool]:
     """(cost, panel widths, justified) for a row of panels with these natural widths.
 
     One stretch factor for the whole row; a panel it would make wider than MAX_PANEL_W stops there
     and the others share the rest (a wide panel beside a narrow one: the row still fills)."""
-    room = ROW_W - (len(nat) - 1) * GUTTER
+    room = row_w - (len(nat) - 1) * GUTTER
     cap_w = MAX_PANEL_W - 1                                # 1 px slack for rounding
     capped = [False] * len(nat)
     while True:
@@ -221,6 +233,50 @@ def _excess_portraits(lay: dict, fixed: list[bool]) -> list[int]:
 
 
 def _layout(shape_names: list[str]) -> dict:
+    """Sheets of PAGE_PANELS panels in two rows of three. Panels vary in width (an aspect drawn within their
+    shape's range; the picture is cropped to it) and every full row is stretched to the sheet's width (a wide
+    one at most MAX_PANEL_W). A picture left alone at the very end gets a sheet of its own: full screen, no
+    border ("full": True). The same chapter always gets the same layout."""
+    import random
+    rng = random.Random(f"{len(shape_names)}:{''.join(s[0] for s in shape_names)}")
+    n = len(shape_names)
+    panels, pages, r, k = [], [], 0, 0
+    while k < n:
+        page = len(pages)
+        px = sum(p["w"] for p in pages)
+        if k == n - 1:                                     # one picture left: full screen
+            pages.append({"x": px, "y": 0, "w": W, "h": H, "panels": [k]})
+            panels.append({"k": k, "shape": "wide", "x": px, "y": 0, "w": W, "h": H, "row": r, "page": page,
+                           "full": True})
+            break
+        last = min(n, k + PAGE_PANELS)
+        if last == n and (n - k) % ROW_PANELS == 1:        # a last row of one picture: that one goes full screen
+            last = n - 1
+        rows = []
+        while k < last:
+            c = min(ROW_PANELS, last - k)
+            nat = [round(ROW_H * rng.uniform(*ASPECT_RANGE[s])) for s in shape_names[k:k + c]]
+            rows.append((k, nat))
+            k += c
+        page_w = max(sum(w) + (len(w) - 1) * GUTTER for _, w in rows)
+        rows = [(k0, [round(x) for x in _row_fit(nat, False, page_w)[1]]) for k0, nat in rows]   # fill the sheet's width
+        page_w = max(W, page_w + 2 * PAGE_MARGIN)
+        page_h = max(H, len(rows) * ROW_H + (len(rows) - 1) * ROW_GAP + 2 * PAGE_MARGIN)
+        pages.append({"x": px, "y": 0, "w": page_w, "h": page_h, "panels": []})
+        for m, (k0, widths) in enumerate(rows):
+            x = px + PAGE_MARGIN
+            y = PAGE_MARGIN + m * (ROW_H + ROW_GAP)
+            for i, w in enumerate(widths):
+                panels.append({"k": k0 + i, "shape": shape_names[k0 + i], "x": x, "y": y, "w": w, "h": ROW_H,
+                               "row": r, "page": page})
+                pages[page]["panels"].append(k0 + i)
+                x += w + GUTTER
+            r += 1
+    return {"panels": panels, "pages": pages}
+
+
+def _layout_justified(shape_names: list[str]) -> dict:
+    """The earlier layout (switched off): rows justified to ROW_W by one stretch factor, two rows a sheet."""
     nat = [SHAPES[s] * ROW_H for s in shape_names]
     n = len(nat)
     # Row breaks: a small dynamic program over where each row ends.
@@ -635,7 +691,8 @@ def _view(S: dict, t: float, cam, weights: dict, page: int, mx: int = 0, my: int
             still = _cached(S, ("still", k, end, round(wgt, 4), paper),
                             lambda: _faded(_window(S, pan, end), paper, wgt))
             canvas.paste(still, (x, y))
-        draw.rectangle([x, y, x + w - 1, y + h - 1], outline=BORDER_RGB, width=BORDER)
+        if not pan.get("full"):
+            draw.rectangle([x, y, x + w - 1, y + h - 1], outline=BORDER_RGB, width=BORDER)
     if S.get("cues"):                                      # captions, lettered on their panels: they move with them
         from . import panel_lettering as PL
         if "cues_by_k" not in S:

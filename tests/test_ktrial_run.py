@@ -6,6 +6,7 @@ references, two Flow pictures. No real Kaggle, tunnel, Hugging Face, ComfyUI or 
 import base64
 import io
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -433,6 +434,224 @@ def test_up_with_the_cloudflared_tunnel_ignores_a_domain(env, tmp_path, monkeypa
     assert read(trial / "server.json")["url"] is None and not K.domain_file().exists()
 
 
+# ---- two notebooks
+
+@pytest.fixture
+def two(env, tmp_path, monkeypatch):
+    """images.cf_hostname_2 is set, the second token file exists (in a copy of the kaggle folder) and a second account
+    (tester2 = fakeuser2) is there for the second notebook: Kaggle queues a second notebook on the same account."""
+    home = Path(os.environ["NOVEL_HOME"])
+    cfg = yaml.safe_load((home / "settings.yaml").read_text(encoding="utf-8"))
+    cfg["images"] = {"cf_hostname_2": "Alt-Words.example.com", "kaggle_profile_2": "tester2"}
+    cfg["kaggle"]["profiles"]["tester2"] = {"username": "fakeuser2"}
+    (home / "settings.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    (Path(os.environ["NOVEL_KAGGLE_HOME"]) / "access_token-tester2").write_text("KGAT_testtoken_222222", encoding="utf-8")
+    kdir = tmp_path / "kaggle-files"
+    kdir.mkdir()
+    (kdir / "comfy_server.ipynb").write_bytes(K.NOTEBOOK.read_bytes())
+    (kdir / "CLOUDFLARE_TUNNEL_TOKEN_2").write_text("tok2", encoding="utf-8")
+    monkeypatch.setattr(K, "NOTEBOOK", kdir / "comfy_server.ipynb")
+    uploads = []                                    # the token datasets `up` would upload (kaggle_as is not faked)
+    monkeypatch.setattr(K, "ensure_ngrok_dataset", lambda *a: uploads.append(a))
+    return uploads
+
+
+def test_server_records_one_and_two(tmp_path):
+    trial = tmp_path / "t"
+    assert K.load_servers(trial) == [] and K.server_path(trial) == trial / "server.json"
+    K.save_server(trial, {"url": "https://two"}, 2)
+    K.save_server(trial, {"url": "https://one"})
+    assert K.server_path(trial, 2) == trial / "server-2.json"
+    assert [(s["n"], s["url"]) for s in K.load_servers(trial)] == [(1, "https://one"), (2, "https://two")]
+    assert read(trial / "server.json")["n"] == 1 and read(trial / "server-2.json")["n"] == 2
+    assert K.load_server(trial, 2)["url"] == "https://two" and K.load_server(tmp_path / "none", 2) == {}
+    assert (K.dataset_slug("coi", 2), K.kernel_slug("coi", 2)) == ("coi-ktrial-2", "coi-ktrial-comfy-2")
+    assert (K.dataset_slug("coi"), K.kernel_slug("coi")) == ("coi-ktrial", "coi-ktrial-comfy")
+
+
+def test_dry_run_stages_the_second_notebook_on_its_own_tunnel(two, env, tmp_path, capsys):
+    trial = make_trial(tmp_path)
+    assert K.cmd_up(ns(dry_run=True, model=kcomfy.QWEN), trial) == 0
+    out = capsys.readouterr().out
+    assert "staged server 1" in out and "staged server 2" in out and "one server only" not in out
+    one = read(trial / "kaggle" / "dataset" / "session.json")
+    assert one["second_gpu"] is False and one["tunnel"] == "ngrok"
+    s2 = read(trial / "kaggle" / "dataset-2" / "session.json")
+    assert (s2["tunnel"], s2["cf_hostname"], s2["second_gpu"]) == ("cloudflared", "alt-words.example.com", False)
+    assert (s2["cf_dataset"], s2["cf_file"]) == ("cloudflare-tunnel-2", "CLOUDFLARE_TUNNEL_TOKEN_2")
+    assert "domain" not in s2 and "ngrok_dataset" not in s2 and s2["password"] != one["password"]
+    assert read(trial / "kaggle" / "dataset-2" / "dataset-metadata.json")["id"] == "fakeuser2/coi-ktrial-2"
+    meta = read(trial / "kaggle" / "kernel-2" / "kernel-metadata.json")
+    assert meta["id"] == "fakeuser2/coi-ktrial-comfy-2"
+    assert meta["dataset_sources"] == ["fakeuser2/coi-ktrial-2", "fakeuser2/hf-token", "fakeuser2/cloudflare-tunnel-2"]
+    nb = (trial / "kaggle" / "kernel-2" / "coi-ktrial-comfy-2.ipynb").read_text(encoding="utf-8")
+    assert "coi-ktrial-2" in nb and "@DATASET@" not in nb
+    assert fake_calls(env) == []
+
+
+def test_up_pushes_two_notebooks_and_records_both(two, env, tmp_path, monkeypatch, capsys):
+    trial = make_trial(tmp_path)
+    assert K.cmd_up(ns(model=kcomfy.QWEN, no_wait=True, domain="one-words.ngrok-free.dev"), trial) == 0
+    capsys.readouterr()
+    one, second = read(trial / "server.json"), read(trial / "server-2.json")
+    assert (one["n"], one["url"], one["kernel"]) == (1, "https://one-words.ngrok-free.dev", "fakeuser/coi-ktrial-comfy")
+    assert (second["n"], second["url"], second["kernel"]) == (2, "https://alt-words.example.com",
+                                                               "fakeuser2/coi-ktrial-comfy-2")
+    assert second["tunnel"] == "cloudflared" and "fallback_url" not in second and second["model"] == kcomfy.QWEN
+    assert one["password"] != second["password"] and (one["account"], second["account"]) == ("tester", "tester2")
+    assert two == [("tester2", "fakeuser2", "cloudflare-tunnel-2", "CLOUDFLARE_TUNNEL_TOKEN_2")]
+    assert (env.state / "datasets" / "fakeuser2__coi-ktrial-2" / "session.json").exists()
+    assert len([c for c in fake_calls(env) if c.startswith("kernels push")]) == 2
+    # a running kernel of either blocks the next up
+    monkeypatch.setenv("FAKE_KAGGLE_RUNNING_POLLS", "100")
+    assert K.cmd_up(ns(model=kcomfy.QWEN), trial) == 1 and "still RUNNING" in capsys.readouterr().out
+
+
+def test_servers_1_and_a_missing_setting_or_token_start_one_notebook(two, env, tmp_path, capsys):
+    trial = make_trial(tmp_path)
+    assert K.cmd_up(ns(model=kcomfy.QWEN, no_wait=True, servers=1), trial) == 0
+    assert not (trial / "server-2.json").exists() and "one server only" not in capsys.readouterr().out
+    (K.NOTEBOOK.parent / "CLOUDFLARE_TUNNEL_TOKEN_2").unlink()
+    trial = make_trial(tmp_path / "b")
+    assert K.cmd_up(ns(model=kcomfy.QWEN, no_wait=True), trial) == 0
+    assert "one server only: " in capsys.readouterr().out and not (trial / "server-2.json").exists()
+
+
+def test_no_second_account_means_one_server(two, env, tmp_path, capsys):
+    home = Path(os.environ["NOVEL_HOME"])
+    cfg = yaml.safe_load((home / "settings.yaml").read_text(encoding="utf-8"))
+    cfg["images"].pop("kaggle_profile_2")            # pick_free is off: the only account would be the first's
+    (home / "settings.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    trial = make_trial(tmp_path)
+    assert K.cmd_up(ns(model=kcomfy.QWEN, no_wait=True), trial) == 0
+    out = capsys.readouterr().out
+    assert "no second Kaggle account" in out and not (trial / "server-2.json").exists()
+
+
+def test_a_failed_push_of_the_second_notebook_goes_on_with_one(two, env, tmp_path, monkeypatch, capsys):
+    trial = make_trial(tmp_path)
+    real = K._push
+
+    def push(trial, book, user, profile, args, n, *a):
+        return None if n == 2 else real(trial, book, user, profile, args, n, *a)
+
+    monkeypatch.setattr(K, "_push", push)
+    assert K.cmd_up(ns(model=kcomfy.QWEN, no_wait=True), trial) == 0
+    assert "second notebook could not be pushed" in capsys.readouterr().out and not (trial / "server-2.json").exists()
+
+
+def test_down_stops_every_recorded_server(env, tmp_path, fc, capsys):
+    trial = make_trial(tmp_path)
+    write_server(trial, fc)
+    K.save_server(trial, dict(read(trial / "server.json"), kernel="fakeuser/coi-ktrial-comfy-2"), 2)
+    assert K.cmd_down(ns(), trial) == 0
+    out = capsys.readouterr().out
+    assert "server 1:" in out and "server 2:" in out and out.count("stop file sent") == 2
+    assert read(trial / "server.json")["stopped"] and read(trial / "server-2.json")["stopped"]
+
+
+def two_servers(trial, fc1, fc2):
+    write_server(trial, fc1, comfy_user=None, password=None, model=kcomfy.QWEN)
+    K.save_server(trial, dict(read(trial / "server.json"), url=fc2.url), 2)
+
+
+def test_run_draws_through_one_queue_over_two_servers(env, tmp_path, capsys):
+    trial = make_trial(tmp_path)
+    with FakeComfy(pending_polls=0) as fc1, FakeComfy(pending_polls=0) as fc2:
+        fc1.user = fc2.user = None
+        two_servers(trial, fc1, fc2)
+        assert K.cmd_run(ns(), trial) == 0
+        assert "made 6, skipped 0, failed 0" in capsys.readouterr().out
+        root = trial / kcomfy.QW_DIR
+        assert all(K._valid_jpeg(root / f"images/s0{n}.jpg") for n in (1, 2, 3, 4))
+        assert len(fc1.prompts) + len(fc2.prompts) == 6
+        for fc in (fc1, fc2):                       # a server that draws a shot was given that shot's plate
+            for g in graphs(fc):
+                for ref in load_refs(g):
+                    assert ref in fc.uploads
+
+
+def test_each_finished_shot_lands_in_the_episode_folder_at_once(env, tmp_path, capsys):
+    trial = make_trial(tmp_path)
+    publish = tmp_path / "episode" / "images" / "c0024"
+    with FakeComfy(pending_polls=0) as fc1, FakeComfy(pending_polls=0) as fc2:
+        fc1.user = fc2.user = None
+        two_servers(trial, fc1, fc2)
+        assert K.cmd_run(ns(publish=publish), trial) == 0
+    root = trial / kcomfy.QW_DIR / "images"
+    for n in (1, 2, 3, 4):                          # the shots, not the place plates
+        assert (publish / f"s0{n}-2k.jpg").read_bytes() == (root / f"s0{n}.jpg").read_bytes()
+        assert (publish / f"s0{n}.prompt.txt").exists()
+    assert sorted(p.name for p in publish.glob("*.jpg")) == [f"s0{n}-2k.jpg" for n in (1, 2, 3, 4)]
+
+
+def test_run_with_the_second_server_down_uses_the_first_and_says_the_other_will_join(env, tmp_path, dead, capsys):
+    trial = make_trial(tmp_path)
+    with FakeComfy(pending_polls=0) as fc1:
+        fc1.user = None
+        write_server(trial, fc1, comfy_user=None, password=None, model=kcomfy.QWEN)
+        K.save_server(trial, dict(read(trial / "server.json"), url=dead), 2)
+        assert K.cmd_run(ns(), trial) == 0
+        assert "2 will join when it answers" in capsys.readouterr().out
+        assert len(fc1.prompts) == 6
+
+
+def test_qa_redraws_go_through_the_queue_and_the_status_list_names_the_server(env, tmp_path, fc, monkeypatch):
+    from novel import kqa
+
+    class FakeQA:
+        def __init__(self, cfg, key):
+            pass
+
+        def judge(self, jpeg, brief):
+            bad = "Two people" in brief
+            issues = [{"kind": "anatomy", "fix": "fix hands"}] if bad else []
+            return {"pass": not bad, "votes": [], "referee": None, "issues": issues}
+
+        def recheck(self, jpeg, brief):
+            return {"pass": True, "referee": None, "issues": []}
+
+    monkeypatch.setattr(kqa, "QA", FakeQA)
+    monkeypatch.setattr(kqa, "find_key", lambda: "key")
+    monkeypatch.setattr(kqa, "small_jpeg", lambda p: b"x")
+    trial = make_trial(tmp_path)
+    write_server(trial, fc, model=kcomfy.QWEN)
+    fc.user = None
+    assert K.cmd_run(ns(qa=True), trial) == 0
+    assert len(fc.prompts) == 7                                     # 6 pictures and the redraw of s02
+    assert any("fix hands" in str(g["graph"]) for g in graphs(fc))
+    rec = read(trial / kcomfy.QW_DIR / "qa.json")
+    assert rec["s02"]["status"] == "fixed" and rec["s02"]["server"] == 1 and rec["s01"]["status"] == "pass"
+
+
+def test_qa_of_pictures_already_there_can_still_redraw(env, tmp_path, fc, monkeypatch):
+    from novel import kqa
+
+    class FakeQA:
+        def __init__(self, cfg, key):
+            pass
+
+        def judge(self, jpeg, brief):
+            bad = "Two people" in brief
+            return {"pass": not bad, "votes": [], "referee": None,
+                    "issues": [{"kind": "anatomy", "fix": "fix hands"}] if bad else []}
+
+        def recheck(self, jpeg, brief):
+            return {"pass": True, "referee": None, "issues": []}
+
+    trial = make_trial(tmp_path)
+    write_server(trial, fc, model=kcomfy.QWEN)
+    fc.user = None
+    assert K.cmd_run(ns(), trial) == 0                              # no QA: six pictures, no verdicts
+    monkeypatch.setattr(kqa, "QA", FakeQA)
+    monkeypatch.setattr(kqa, "find_key", lambda: "key")
+    monkeypatch.setattr(kqa, "small_jpeg", lambda p: b"x")
+    assert K.cmd_run(ns(qa=True), trial) == 0
+    assert len(fc.prompts) == 7                                     # the redraw of s02 went through the queue
+    rec = read(trial / kcomfy.QW_DIR / "qa.json")
+    assert {k: v["status"] for k, v in rec.items()} == {"s01": "pass", "s02": "fixed", "s03": "pass", "s04": "pass"}
+
+
 # ---- url
 
 def test_url_stores_the_address_and_pings(env, tmp_path, monkeypatch, capsys):
@@ -837,12 +1056,12 @@ def test_report_with_some_pictures(env, tmp_path, fc):
     cut = trial / "report" / "cut"
     assert (cut / "trial-s01.jpg").exists() and (cut / "trial-s02.jpg").exists()
     assert not (cut / "trial-s03.jpg").exists() and not (cut / "flow-s02.jpg").exists()
-    # trial shapes come from the trial scenes: one person -> portrait 3:4, two people medium -> landscape 4:3
-    assert abs(aspect(cut / "trial-s01.jpg") / (3 / 4) - 1) < 0.02
+    # trial shapes come from the trial scenes: one person -> landscape 4:3 (portrait and tall are switched off), two people medium -> landscape 4:3
+    assert abs(aspect(cut / "trial-s01.jpg") / (4 / 3) - 1) < 0.02
     assert abs(aspect(cut / "trial-s02.jpg") / (4 / 3) - 1) < 0.02
-    # Flow shapes come from the PRODUCTION scenes: window 1 has two people -> 4:3, window 3 close-up -> tall 2:3
+    # Flow shapes come from the PRODUCTION scenes: window 1 has two people -> 4:3, window 3 close-up -> 4:3 (tall is switched off)
     assert abs(aspect(cut / "flow-s01.jpg") / (4 / 3) - 1) < 0.02
-    assert abs(aspect(cut / "flow-s03.jpg") / (2 / 3) - 1) < 0.02
+    assert abs(aspect(cut / "flow-s03.jpg") / (4 / 3) - 1) < 0.02
     for f in cut.glob("*.jpg"):
         with Image.open(f) as im:
             assert abs(im.height - K.CUT_HEIGHT) <= 1
@@ -1169,8 +1388,8 @@ def test_report_has_the_openrouter_column_only_when_its_folder_exists(env, tmp_p
     assert f"OpenRouter {korouter.MODEL}" in page and "2/4" in page and "$0.0270" in page
     cut = trial / "report" / "cut"
     assert (cut / "or-s01.jpg").exists() and (cut / "or-s02.jpg").exists() and not (cut / "or-s03.jpg").exists()
-    # the same panel shapes as the Kaggle column: one person -> portrait 3:4, two people medium -> landscape 4:3
-    assert abs(aspect(cut / "or-s01.jpg") / (3 / 4) - 1) < 0.02
+    # the same panel shapes as the Kaggle column: one person -> landscape 4:3 (portrait is switched off), two people medium -> landscape 4:3
+    assert abs(aspect(cut / "or-s01.jpg") / (4 / 3) - 1) < 0.02
     assert abs(aspect(cut / "or-s02.jpg") / (4 / 3) - 1) < 0.02
     assert f'src="{K.OR_DIR}/images/s01.jpg"' in page and 'src="report/cut/or-s01.jpg"' in page
     assert f'src="{K.OR_DIR}/images/s03.jpg"' not in page

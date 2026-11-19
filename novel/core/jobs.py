@@ -305,7 +305,7 @@ def _tts(book, ep, args):
         if a == "--chapters" and i + 1 < len(args):
             chapters = args[i + 1]
     if not unpulled:
-        if not chapters and not T.default_chapters(ep):
+        if not chapters and not T.default_chapters(ep) and not T.intro_pending(ep):
             print("nothing to narrate: no locked chapter is without audio, and no run waits to be pulled")
             return 0
         push = ["push", "--book", book, "--ep", str(ep)] + (["--chapters", chapters] if chapters else [])

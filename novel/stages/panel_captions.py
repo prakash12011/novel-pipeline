@@ -122,12 +122,14 @@ def _portions(words: list[str], t0: float, t1: float, cuts: list[float]) -> list
 def cues(lines: list[dict], pl: dict, measure: Measure, *, lead: float, title_end: float) -> list[dict]:
     """The captions of a chapter: [{"k", "t0", "t1", "lines", "text"}] in video seconds, sorted by t0
     and never overlapping. `lines` are sentences {"para", "en", "start", "end"} in narration seconds."""
+    from .heading import is_heading
     cuts = pl["cuts"]
     panels = pl["panels"]
     raw: list[tuple[float, float, int, list[str]]] = []
     for ln in lines:
         words = (ln.get("en") or "").split()
-        if ln.get("para") == 0 or not words:
+        # paragraph 0 is a spoken chapter heading only in older chapters; in new ones it is the story's first lines
+        if not words or (ln.get("para") == 0 and is_heading(ln.get("hi", ""))):
             continue
         t0, t1 = lead + ln["start"], lead + ln["end"]
         if t1 <= t0:

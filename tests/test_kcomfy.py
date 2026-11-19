@@ -200,6 +200,9 @@ def test_notebook_structure():
     # the tunnel order: the named Cloudflare tunnel first, then ngrok, then a quick tunnel; a second card behind /g2
     assert 'ORDER = (["named"] if CF_HOST else []) + (["ngrok"] if TUNNEL == "ngrok" else []) + ["quick"]' in text
     assert "routes={kcomfy.SECOND_PREFIX:" in text and "KTRIAL SECOND CARD" in text
+    assert 'session.get("second_gpu", True)' in text      # `up` always turns it off: the second T4 never fits in RAM
+    # each notebook reads its own tunnel token (the second one: cloudflare-tunnel-2)
+    assert '_secret(session.get("cf_dataset", "cloudflare-tunnel"), session.get("cf_file", "CLOUDFLARE_TUNNEL_TOKEN"))' in text
     for i, c in enumerate(nb["cells"]):
         if c["cell_type"] != "code":
             continue
@@ -437,3 +440,22 @@ def test_ktrial_vae_loader_moves_vae_only_when_the_layout_asks(monkeypatch):
     ns, nodes, made = _exec_nodes(monkeypatch, "last_gpu", cuda_count=1)
     nodes.VAELoader().load_vae("vae.safetensors")
     assert made[-1]["device"] is None                                                   # one card: ComfyUI's default
+
+
+def test_qwen_split_encoder_layout_comes_first_only_when_asked():
+    plain = kcomfy.layouts(kcomfy.QWEN, None, flux_visible="1")
+    assert [l["name"] for l in plain] == ["one-card-default", "one-card-fp32-unet"] and plain[0]["visible"] == "1"
+    split = kcomfy.layouts(kcomfy.QWEN, None, flux_visible="1", split_encoder=True)
+    assert split[0]["name"] == "two-cards-encoder-card1" and split[0]["visible"] == ""     # both cards
+    assert split[0]["env"] == {"KTRIAL_CLIP_DEVICE": "last_gpu"} and split[1:] == plain     # the fallbacks stay
+
+
+def test_the_node_file_compiles_and_the_notebook_writes_it_for_qwen():
+    compile(kcomfy.KTRIAL_NODES_PY, "ktrial_nodes.py", "exec")
+    assert 'os.environ.get("KTRIAL_CLIP_DEVICE") == "last_gpu"' in kcomfy.KTRIAL_NODES_PY
+    import json as _json
+    nb = _json.loads(Path(__file__).resolve().parents[1].joinpath("kaggle", "comfy_server.ipynb").read_text(
+        encoding="utf-8"))
+    src = "".join("".join(c["source"]) for c in nb["cells"])
+    assert "if MODEL == kcomfy.QWEN:" in src and 'split_encoder=bool(session.get("split_encoder"))' in src
+    assert "ktrial_layout.json" in src

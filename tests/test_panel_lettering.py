@@ -530,7 +530,12 @@ def test_frame_caption_pops_in_then_is_full(chapter):
 def test_frame_caption_for_another_panel_is_not_drawn_on_this_one(chapter):
     pl, _ = chapter
     c = cue(("MOON LIGHT",), k=1, t0=0.5, t1=2.5)                    # panel 1's caption while panel 0 is narrated
-    assert np.array_equal(np.asarray(P.frame(state(chapter, [c]), 1.0)), np.asarray(P.frame(state(chapter), 1.0)))
+    # panels are 95% of the screen, so panel 1's edge may peek in beside panel 0: its letters stay on panel 1
+    p0 = pl["panels"][0]
+    ox, oy = p0["x"] - (p0["cam"][0] - R.W // 2), p0["y"] - (p0["cam"][1] - R.H // 2)
+    diff = changed(P.frame(state(chapter, [c]), 1.0), P.frame(state(chapter), 1.0))
+    x0, x1, y0, y1 = max(0, ox), min(R.W, ox + p0["w"]), max(0, oy), min(R.H, oy + p0["h"])
+    assert not diff[y0:y1, x0:x1].any()
 
 
 def test_frame_caption_is_drawn_inside_its_panel_when_it_is_active(chapter):

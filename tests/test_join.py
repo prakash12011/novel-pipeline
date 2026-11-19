@@ -22,7 +22,7 @@ pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("
                                 reason="ffmpeg/ffprobe not installed")
 
 BOOK = "demo"
-FAST = {"video": {"disclaimer": {"seconds": 1.0}, "subscribe": {"silent": {"seconds": 1}}}}
+FAST = {"video": {"style": "kenburns", "disclaimer": {"seconds": 1.0}, "subscribe": {"silent": {"seconds": 1}}}}   # these tests are not about the style
 
 
 def ff(*args):

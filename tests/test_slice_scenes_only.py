@@ -112,7 +112,7 @@ def make_world(tmp_path, monkeypatch):
         "images": {"flow_project": "https://flow.google.com/project/slice", "flow_model": "Nano Banana Pro",
                    "pause": 0, "chapter_pause": 0, "rest_every": 50, "rest": 0, "batch": 1, "max_per_run": 200,
                    "chapters_per_day": 5, "wall_cooldown_hours": 12},
-        "video": {"hd": {"enabled": False}, "disclaimer": {"seconds": 1.0}},
+        "video": {"style": "kenburns", "hd": {"enabled": False}, "disclaimer": {"seconds": 1.0}},   # not about the style
         "publish": {"title_template": "Tide Tales Explained in Hindi | Episode [N] (Ch [X]-[Y])",
                     "description_template": DESC_TEMPLATE,
                     "tags": ["tide tales hindi", "tide tales explained in hindi"],

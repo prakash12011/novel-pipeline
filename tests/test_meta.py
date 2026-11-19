@@ -310,7 +310,7 @@ def test_default_command_line(monkeypatch):
     monkeypatch.setattr(meta.shutil, "which", lambda n: "C:/bin/claude.exe")
     cmd = meta.claude_command()
     assert cmd[0] == "C:/bin/claude.exe"
-    assert cmd[1:7] == ["-p", "--model", "sonnet", "--output-format", "json", "--tools"] and cmd[7] == ""
+    assert cmd[1:7] == ["-p", "--model", "claude-opus-5-5", "--output-format", "json", "--tools"] and cmd[7] == ""
     monkeypatch.setattr(meta.shutil, "which", lambda n: None)
     with pytest.raises(meta.ClaudeUnavailable):
         meta.claude_command()

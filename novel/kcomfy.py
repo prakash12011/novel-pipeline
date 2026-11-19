@@ -304,6 +304,36 @@ if os.environ.get("KTRIAL_VAE_DEVICE") == "last_gpu":
     logging.info("ktrial_nodes: VAELoader builds VAEs on the last card (KTRIAL_VAE_DEVICE)")
 
 
+# The same for the text encoder of an unchanged graph (Qwen-Image on two T4s): with KTRIAL_CLIP_DEVICE=last_gpu the stock
+# CLIPLoader hands comfy.sd.load_clip the documented model_options["load_device"] (the CPU choice of the stock node uses
+# the same key), so the encoder lives on the last card and never has to leave the diffusion model's card.
+if os.environ.get("KTRIAL_CLIP_DEVICE") == "last_gpu":
+    _stock_load_clip = nodes.CLIPLoader.load_clip
+
+    def _load_clip(self, clip_name, type="stable_diffusion", device="default"):
+        target = _last_gpu()
+        if target is None or device != "default":
+            return _stock_load_clip(self, clip_name, type, device)
+        real = comfy.sd.load_clip
+
+        @functools.wraps(real)
+        def patched(*args, **kw):
+            mo = dict(kw.pop("model_options", None) or {})
+            mo.setdefault("load_device", target)
+            return real(*args, model_options=mo, **kw)
+
+        comfy.sd.load_clip = patched
+        try:
+            out = _stock_load_clip(self, clip_name, type, device)
+        finally:
+            comfy.sd.load_clip = real
+        logging.info("ktrial_nodes: CLIPLoader put %s on %s (KTRIAL_CLIP_DEVICE)", clip_name, target)
+        return out
+
+    nodes.CLIPLoader.load_clip = _load_clip
+    logging.info("ktrial_nodes: CLIPLoader builds text encoders on the last card (KTRIAL_CLIP_DEVICE)")
+
+
 NODE_CLASS_MAPPINGS = {"KTrialUnetLoaderGGUF": KTrialUnetLoaderGGUF, "KTrialCLIPLoaderGGUF": KTrialCLIPLoaderGGUF,
                        "KTrialVAELoader": KTrialVAELoader}
 """
@@ -360,6 +390,12 @@ QW_LAYOUTS = [
     {"name": "one-card-default", "args": []},
     {"name": "one-card-fp32-unet", "args": ["--fp32-unet"]},
 ]
+# Both T4s of the notebook: the diffusion model and the VAE on card 0 (ComfyUI's default), the 9.3 GB text encoder on
+# card 1 (ktrial_nodes.py, KTRIAL_CLIP_DEVICE). On one 15 GB card the 7.2 GB model and the encoder do not fit together, so
+# ComfyUI moved the encoder in and out for every picture. Tried first when the session asks for it (split_encoder);
+# the one-card layouts stay behind it as the fallback.
+QW_SPLIT_LAYOUT = {"name": "two-cards-encoder-card1", "visible": "", "args": [],
+                   "env": {"KTRIAL_CLIP_DEVICE": "last_gpu"}}
 
 _SIZE_STEPS = {FLUX: SIZE_STEP, MINIMAX: MM_SIZE_STEP, QWEN: QW_SIZE_STEP}
 
@@ -418,15 +454,18 @@ def probe_timeout(model: str) -> float:
     return {MINIMAX: MM_PROBE_TIMEOUT, QWEN: QW_PROBE_TIMEOUT}.get(model, 1800.0)
 
 
-def layouts(model: str, comfy_args: list[str] | None = None, flux_visible: str = "") -> list[dict]:
+def layouts(model: str, comfy_args: list[str] | None = None, flux_visible: str = "",
+            split_encoder: bool = False) -> list[dict]:
     """The launch layouts to try: FLUX has one (its `visible` card, the session's args), MiniMax and Qwen the lists
-    above (Qwen on the `flux_visible` card). Given `comfy_args` replace each layout's arguments."""
+    above (Qwen on the `flux_visible` card; with `split_encoder` the two-card layout first). Given `comfy_args` replace
+    each layout's arguments."""
     if model == MINIMAX:
         out = [dict(l, args=list(comfy_args) if comfy_args is not None else list(l["args"])) for l in MM_LAYOUTS]
         return out
     if model == QWEN:
-        return [dict(l, visible=flux_visible, args=list(comfy_args) if comfy_args is not None else list(l["args"]))
-                for l in QW_LAYOUTS]
+        one = [dict(l, visible=flux_visible, args=list(comfy_args) if comfy_args is not None else list(l["args"]))
+               for l in QW_LAYOUTS]
+        return ([dict(QW_SPLIT_LAYOUT, args=list(comfy_args or []))] if split_encoder else []) + one
     return [{"name": "default", "visible": flux_visible,
              "args": list(comfy_args) if comfy_args is not None else list(COMFY_LAUNCH_ARGS)}]
 

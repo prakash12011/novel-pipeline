@@ -160,3 +160,52 @@ def test_apply_faces_rewords_a_look_aloud():
     assert done == ["ava"]
     assert bible["characters"]["ava"]["look"] == "girl with soft rosy cheeks"
     assert any("was: girl with fine downy facial hair" in s for s in said)
+
+
+class FakeClaude:
+    """A headless Claude: answers from a list of (verdict or exception), remembers the picture file it was given."""
+
+    def __init__(self, *answers):
+        self.answers, self.seen = list(answers), []
+
+    def __call__(self, model):
+        self.model = model
+        return self
+
+    def generate(self, system, text, *, image=None, max_output_tokens=0):
+        from types import SimpleNamespace
+        self.seen.append((self.model, image))
+        a = self.answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return SimpleNamespace(text=json.dumps(a))
+
+
+def test_a_claude_model_reads_the_picture_file_in_place_and_go_models_use_go(tmp_path):
+    pic = picture(tmp_path / "s01-2k.jpg")
+    fc, seen = FakeClaude(OK), []
+    q = kqa.QA({"panel": ["a", "claude:claude-haiku-5-5"], "spare": [], "referee": None}, "k",
+               post=fake({"a": OK}, seen), claude=fc)
+    j = q.judge(kqa.small_jpeg(pic), "brief")
+    assert j["pass"] is True and [v["model"] for v in j["votes"]] == ["a", "claude:claude-haiku-5-5"]
+    assert fc.seen == [("claude-haiku-5-5", pic)]                  # the file itself, not a copy
+    assert [b["model"] for b in seen] == ["a"]                     # Go was asked only for the Go model
+    assert list(tmp_path.iterdir()) == [pic]                       # nothing was written beside it
+
+
+def test_a_claude_usage_limit_is_replaced_by_the_spare_and_the_referee_can_be_claude(tmp_path):
+    from novel import kclaude
+    pic = picture(tmp_path / "s01-2k.jpg")
+    fc = FakeClaude(kclaude.ClaudeError("claude -p: usage limit reached"), OK)    # haiku is out, then the referee passes
+    q = kqa.QA({"panel": ["a", "claude:claude-haiku-5-5"], "spare": ["d"], "referee": "claude:claude-opus-5-5"}, "k",
+               post=fake({"a": BAD, "d": BAD}), claude=fc)
+    j = q.judge(kqa.small_jpeg(pic), "brief")
+    assert [v["model"] for v in j["votes"]] == ["a", "d"] and "claude:claude-haiku-5-5" in q.out_of_quota
+    assert j["pass"] is True and j["referee"]["model"] == "claude:claude-opus-5-5"   # Opus overruled the panel
+    assert fc.seen[-1][0] == "claude-opus-5-5"
+
+
+def test_a_claude_model_needs_a_picture_file():
+    q = kqa.QA({}, "k", claude=FakeClaude(OK))
+    with pytest.raises(kqa.QAError):
+        q.ask("claude:claude-haiku-5-5", b"raw bytes", "brief")

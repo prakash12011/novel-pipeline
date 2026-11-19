@@ -22,6 +22,9 @@ def _no_gemini_free_tier_count(monkeypatch):
     """Tests never touch the real <novel home>/gemini_usage.json (test_keybudget tests the counter itself)."""
     from novel.stages import episode_translate
     monkeypatch.setattr(episode_translate, "default_budget", lambda model, keys: None)
+    # nor the real OpenCode Go fallback (the key is in secrets.env): test_keybudget tests the order with a fake
+    monkeypatch.setattr(episode_translate.Gemini, "_opencode", lambda self, *a, **k: None)
+    monkeypatch.setattr(episode_translate.Gemini, "_claude", lambda self, *a, **k: None)   # nor headless Claude Code
 
 
 @pytest.fixture(autouse=True)

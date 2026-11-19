@@ -583,8 +583,8 @@ def test_v2_qa_with_old_hashes_is_stale_and_names_the_fix(world):
     assert ST.qa_state(root, 21) == ("stale", 0)
     res = collect(world)
     assert res["chapters"][0]["qa"] == "stale"
-    assert "chapter 21: QA is out of date (the Hindi or the scenes changed after it ran) -> novel qa --chapters 21" \
-        in lines(res)
+    # QA is optional: an out-of-date QA is shown in the table (qa == "stale") but no longer blocks the build
+    assert not [l for l in lines(res) if "QA is out of date" in l]
     assert not [l for l in lines(res) if "QA says FIX" in l]
     # a stale review alone (code file current) is stale too; a changed scene file does the same
     put(root, "hindi/00021.txt", HINDI)

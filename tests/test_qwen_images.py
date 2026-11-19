@@ -1,5 +1,6 @@
 """The Qwen production path: copying finished pictures into the episode, the free-account picker, the sheet prompt."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -72,16 +73,33 @@ def test_sheet_prompt_is_the_book_style_on_a_plain_sheet_with_the_bible_look():
     assert KR.SHEET_LAYOUT in text and text.rstrip().endswith(KR.SHEET_END)
 
 
-def test_two_cards_split_the_pictures_alternately_and_each_makes_its_half(monkeypatch):
-    from types import SimpleNamespace
+def test_live_servers_takes_the_newest_answering_record_of_each_notebook(tmp_path, monkeypatch):
     from novel.stages import ktrial_run as KR
-    plan = {"plates": [], "shots": [{"out": f"images/s{i:02d}.jpg", "id": f"c0001-s{i:02d}", "group": "g01"}
-                                    for i in range(1, 6)]}
-    seen = {}
-    monkeypatch.setattr(KR, "_execute", lambda run, args, plan: seen.setdefault(run, args.only) and 0)
-    args = SimpleNamespace(only=None, limit=None, reroll=False, redo=False)
-    assert KR._execute_two(["card1", "card2"], args, plan) == 0
-    assert seen == {"card1": "s01,s03,s05", "card2": "s02,s04"}
-    seen.clear()
-    assert KR._execute_two(["card1", "card2"], SimpleNamespace(only="s04", limit=None), plan) == 0
-    assert seen == {"card1": "s04"}                                              # one picture: one card
+    monkeypatch.setattr(qwen_images.paths, "book_dir", lambda book: tmp_path)
+    for chapter, n, url, model in ((1, 1, "https://old-1", kcomfy.QWEN), (2, 1, "https://new-1", kcomfy.QWEN),
+                                   (2, 2, "https://new-2", kcomfy.QWEN), (1, 2, "https://flux-2", kcomfy.FLUX)):
+        trial = tmp_path / "_work" / "ktrial" / f"c{chapter:04d}"
+        KR.save_server(trial, {"url": url, "model": model}, n)
+        os.utime(KR.server_path(trial, n), (chapter * 10 + n, chapter * 10 + n))
+    monkeypatch.setattr(KR, "answering", lambda s, retries=1: None if "dead" in s["url"] else dict(s))
+    got = qwen_images.live_servers("b")
+    assert [(s["n"], s["url"]) for s in got] == [(1, "https://new-1"), (2, "https://new-2")]
+    monkeypatch.setattr(KR, "answering", lambda s, retries=1: None if s["url"] == "https://new-1" else dict(s))
+    assert [(s["n"], s["url"]) for s in qwen_images.live_servers("b")] == [(1, "https://old-1"), (2, "https://new-2")]
+
+
+def test_a_booting_notebook_2_is_kept_to_join_but_an_old_one_is_not(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from novel.stages import ktrial_run as KR
+    monkeypatch.setattr(qwen_images.paths, "book_dir", lambda book: tmp_path)
+    trial = tmp_path / "_work" / "ktrial" / "c0001"
+    stamp = lambda h: (datetime.now(timezone.utc) - timedelta(hours=h)).strftime("%Y%m%dT%H%M%S")   # noqa: E731
+    KR.save_server(trial, {"url": "https://one", "model": kcomfy.QWEN, "pushed": stamp(0.1)}, 1)
+    KR.save_server(trial, {"url": "https://two", "model": kcomfy.QWEN, "pushed": stamp(0.1)}, 2)
+    monkeypatch.setattr(KR, "answering", lambda s, retries=1: dict(s) if s["url"] == "https://one" else None)
+    assert [s["n"] for s in qwen_images.live_servers("b")] == [1, 2]          # 2 still booting: it joins later
+    KR.save_server(trial, {"url": "https://two", "model": kcomfy.QWEN, "pushed": stamp(9)}, 2)
+    assert [s["n"] for s in qwen_images.live_servers("b")] == [1]             # yesterday's notebook 2: gone
+    monkeypatch.setattr(KR, "answering", lambda s, retries=1: None)
+    KR.save_server(trial, {"url": "https://two", "model": kcomfy.QWEN, "pushed": stamp(0.1)}, 2)
+    assert qwen_images.live_servers("b") == []                                # no server 1: start both again

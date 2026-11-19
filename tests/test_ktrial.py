@@ -470,7 +470,7 @@ def test_the_book_defaults_to_the_current_book(book, capsys):
 
 def test_scenes_defaults(book):
     a = ktrial_cmd.build_parser("scenes").parse_args(["--chapter", "24"])
-    assert (a.chapter, a.book, a.ep, a.max_characters, a.from_production, a.force) == (24, None, None, 2, False, False)
+    assert (a.chapter, a.book, a.ep, a.max_characters, a.from_production, a.force) == (24, None, None, 4, False, False)
     with pytest.raises(SystemExit):
         ktrial_cmd.build_parser("scenes").parse_args([])                      # --chapter is required
 

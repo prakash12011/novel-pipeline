@@ -173,7 +173,7 @@ INLINE_SPANS = inline_spans()
 def test_inline_command_is_real(fname, lineno, span):
     """Commands written in the prose (not in a ```cmd block): the command, its sub-command and every
     --option written in the span must exist. Optional [brackets] and | alternatives are allowed."""
-    m = re.match(r"novel\s+([a-z_]+)(?:\s+([a-z]+))?", span)
+    m = re.match(r"novel\s+([a-z_-]+)(?:\s+([a-z]+))?", span)
     command, word = m.group(1), m.group(2)
     assert command in HANDLERS and HANDLERS[command] is not None, \
         f"{fname}:{lineno}: `{span}`: `novel {command}` is not a built command"
@@ -192,7 +192,7 @@ def test_inline_command_is_real(fname, lineno, span):
 
 def test_every_command_has_a_reference_entry():
     commands_md = (ROOT / "COMMANDS.md").read_text(encoding="utf-8")
-    headings = set(re.findall(r"^### novel (\w+)\s*$", commands_md, re.M))
+    headings = set(re.findall(r"^### novel ([\w-]+)\s*$", commands_md, re.M))
     missing = [n for n in VISIBLE if n not in headings]
     assert not missing, f"COMMANDS.md has no `### novel <name>` entry for: {', '.join(missing)}"
     unknown = sorted(headings - set(HANDLERS))
@@ -225,7 +225,7 @@ def table_rows(path: Path):
         if not line.startswith("|"):
             continue
         cells = [c.strip() for c in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
-        m = re.fullmatch(r"`([a-z_]+(?:\.[a-z_]+)*)`", cells[0]) if cells else None
+        m = re.fullmatch(r"`([a-z_0-9]+(?:\.[a-z_0-9]+)*)`", cells[0]) if cells else None
         if m and len(cells) >= 4:
             rows.append((m.group(1), cells[1], cells[-1]))
     return rows

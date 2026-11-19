@@ -93,8 +93,8 @@ novel ktrial run --chapter 24 --plates-only      # then without --plates-only
 - `--ngrok-dataset SLUG`: the private dataset of the account that holds the ngrok token (file `NGROK_AUTHTOKEN`), for a
   second ngrok account (one free ngrok account allows one tunnel at a time). Give that account's `--domain`; it is not
   remembered. Without one the address is not fixed and you copy it from the notebook page (`novel ktrial url`).
-- Only one server is recorded per chapter (`server.json`): `up` refuses while the recorded one is running, so run
-  `novel ktrial down` for the FLUX server first.
+- One server (`server.json`) or two (`server-2.json`, Qwen only, the Alt tunnel `images.cf_hostname_2`) are recorded
+  per chapter: `up` refuses while a recorded one is running, so run `novel ktrial down` for the old server first.
 
 ## Where things are (chapter 24)
 

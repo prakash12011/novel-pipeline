@@ -36,7 +36,8 @@ def block_line(t, name):
     return next(l for l in t.splitlines() if l.startswith("[") and name in l)
 
 
-CLOSING_NOBODY = ("Nobody in the picture. No text, speech bubbles, captions or borders. "
+CLOSING_NOBODY = ("Nobody in the picture: no person, no figure, no face and no silhouette anywhere, not even small in the "
+                  "distance. No text, speech bubbles, captions or borders. "
                   "Any page, book, letter or sign is blank, with no writing.")
 FLOW_FOOTER_WORDS = ("STAGING", "CONTINUITY", "FRAMING", "SAFE AREA", "WIDE shot", "Keep every attached character")
 
@@ -97,10 +98,14 @@ def test_golden_two_people_with_references():
         "thirties; Tobias Reed is the lean young man, curly red hair.\n"
         f"[LEFT FOREGROUND, BY THE RAIL: Maren Vale (<ref_image_0>) - {MAREN}; turning; face: wary]\n"
         f"[RIGHT, A STEP BEHIND: Tobias Reed (<ref_image_1>) - {TOBIAS}; walking in; hands: holding nothing, arms "
-        "swinging; wearing a borrowed grey scarf; face: cheerful]",
+        "swinging; wearing a borrowed grey scarf; face: cheerful]\n"
+        # the front-view references' stance is not copied; two people act the moment together (c6 s41)
+        f"{K.REF_POSE}\n{K.TWO_ACT}",
         "SHOT: medium shot from the waist up, the person in front, with the place and the people around them "
         "visible behind.",
-        "SCENE: Maren turns toward Tobias as he walks along the quay.",
+        # the other people by role, never by name (a name pulled in that person's reference twice: chapter 1 s60)
+        "SCENE: The tall woman in her thirties turns toward the lean young man, curly red hair as he walks along the "
+        "quay.",
         CLOSING_PEOPLE]) + "\n"
     r = build(2)
     assert r["text"] == want
@@ -108,7 +113,7 @@ def test_golden_two_people_with_references():
                          {"role": "character", "key": "tobias_reed", "var": "base", "display": "Tobias Reed"},
                          {"role": "place", "group": "g01"}]
     assert r["seed"] == K.seed_for(1, "s02")
-    assert len(r["text"]) < 1600                     # plain visual blocks, no instruction sentences (2026-11-18)
+    assert len(r["text"]) < 1900                     # plain visual blocks, two short guard sentences (2026-11-18)
 
 
 def test_each_character_has_exactly_one_reference():
@@ -140,6 +145,24 @@ def test_text_only_person_gets_no_reference_and_is_described():
     assert "Old Harl is the stooped old man, white beard" in t                          # the contrast line
 
 
+def test_no_place_picture_drops_left_and_right_but_keeps_the_spot():
+    assert K._no_sides("far left, behind the bar counter") == "behind the bar counter"
+    assert K._no_sides("center-right, seated at the wooden table") == "seated at the wooden table"
+    assert K._no_sides("left foreground") == "foreground"
+    assert K._no_sides("by the door") == "by the door"
+    s = scene(1, "g01", "medium", [cast("maren_vale", position="left foreground, by the rail", pose="turning")])
+    assert "[BY THE RAIL: Maren Vale" in K.klein_prompt(s, DOC, 1, BIBLE, LOCS, plate=False)["text"]
+    assert "[LEFT FOREGROUND, BY THE RAIL: Maren Vale" in K.klein_prompt(s, DOC, 1, BIBLE, LOCS)["text"]
+
+
+def test_another_person_in_a_line_is_named_by_role():
+    s = scene(1, "g01", "medium", [cast("maren_vale", position="left", pose="facing Tobias Reed",
+                                        hands="pointing at Tobias"),
+                                   cast("tobias_reed", position="right", pose="walking")])
+    line = block_line(K.klein_prompt(s, DOC, 1, BIBLE, LOCS)["text"], "Maren Vale")
+    assert "Tobias" not in line and "facing the lean young man, curly red hair" in line
+
+
 def test_empty_cast():
     r = build(5)
     assert r["refs"] == [{"role": "place", "group": "g01"}]
@@ -149,7 +172,7 @@ def test_empty_cast():
         f"PLACE: Harbour Quay. {QUAY_SETTING} Keep the place of <ref_image_0>: the same walls, ground, furniture and "
         "light.",
         "SHOT: establishing view of the whole place, no person in focus.",
-        "SCENE: Maren looks over the water.",
+        "SCENE: Someone out of view looks over the water.",          # not in the picture: no name to draw
         CLOSING_NOBODY]) + "\n"
     assert r["text"] == want
     assert "\n[" not in r["text"] and "DIFFERENT" not in r["text"]
@@ -342,16 +365,23 @@ def test_plan_ids_use_the_chapter_number():
 
 # ------------------------------------------------------------------ errors and the table
 
+def one_person(text):
+    return (text.replace("the place and the people around them visible behind", "the place visible behind them")
+            .replace("the people full length", "the person full length"))
+
+
 def test_each_shot_name_has_its_instruction():
     assert tuple(K.KSHOT_TEXT) == S.SHOTS_V2 and len(K.KSHOT_TEXT) == 7
-    assert K.KSHOT_TEXT == {
-        "wide": "wide view of the place, people small and full length",
+    assert K.KSHOT_TEXT == {      # the far shots a little closer: small far faces came out distorted (c6 s41)
+        "wide": "wide view with the place around them, the people full length, filling the frame from head to feet, "
+                "faces clear",
         "establishing": "establishing view of the whole place, no person in focus",
         "medium": "medium shot from the waist up, the person in front, with the place and the people around them "
                   "visible behind",
         "over-the-shoulder": "over-the-shoulder shot, both people from the chest up, one seen from behind",
-        "low-angle": "low camera looking up, from the knees up",
-        "high-angle": "high camera looking down, from the knees up",
+        "low-angle": "low camera looking up, the people full length, filling the frame from head to feet, faces clear",
+        "high-angle": "high camera looking down, the people full length, filling the frame from head to feet, "
+                      "faces clear",
         "detail": "close view of the object alone, filling most of the frame, no people and no hands",
     }
     for shot, text in K.KSHOT_TEXT.items():
@@ -359,10 +389,17 @@ def test_each_shot_name_has_its_instruction():
         # Detail is the object alone: its cast is empty (with a cast it becomes DETAIL_WITH_PERSON, tested apart).
         people = {"over-the-shoulder": [cast("maren_vale"), cast("tobias_reed")],
                   "detail": []}.get(shot, [cast("maren_vale")])
-        s = scene(1, "g01", shot, people)
+        s = scene(1, "g01", shot, people, **({"action": "Seen past Maren Vale's shoulder, Tobias walks in."}
+                                             if shot == "over-the-shoulder" else {}))
+        if shot == "over-the-shoulder":     # two people: whose back it is (Qwen drew the back AND the same face, c3 s18)
+            text = ("over-the-shoulder shot: the near foreground is the back of the tall woman in her thirties (back "
+                    "of the head and one shoulder only, not drawn a second time facing the camera); the lean young "
+                    "man, curly red hair faces the camera, from the chest up")
+        elif shot != "detail":              # one person, no extras: singular wording (c13 s15, c14 s45)
+            text = one_person(text)
         assert f"\n\nSHOT: {text}.\n\n" in K.klein_prompt(s, DOC, 1, BIBLE, LOCS)["text"]
     alone = scene(1, "g01", "over-the-shoulder", [cast("maren_vale")])
-    assert f"\n\nSHOT: {K.KSHOT_TEXT['medium']}.\n\n" in K.klein_prompt(alone, DOC, 1, BIBLE, LOCS)["text"]
+    assert f"\n\nSHOT: {one_person(K.KSHOT_TEXT['medium'])}.\n\n" in K.klein_prompt(alone, DOC, 1, BIBLE, LOCS)["text"]
 
 
 def test_unknown_shot_group_or_location_is_an_error():
@@ -415,3 +452,70 @@ def test_plan_without_plates_has_no_place_picture_and_describes_the_place():
         assert all(r["role"] == "character" for r in sh["refs"]) and "is the place" not in sh["text"]
         assert sh["text"] == K.klein_prompt(s, DOC, 1, BIBLE, LOCS, plate=False)["text"]
     assert QUAY_BLOCK in pl["shots"][0]["text"]
+
+
+def test_a_dream_place_keeps_its_own_light_whatever_the_time():
+    from novel import prompts as P
+    doc = {"groups": {"g01": {"loc": "dream_ruins", "where": "outdoor", "time": "day", "light": "bright sun"}}}
+    locs = {"locations": {"dream_ruins": {"name": "Ruins", "kind": "exterior",
+                                         "fixed_light": "a thick white fog sky, no sun, dim as a starlit night"}}}
+    line = P.setting_line({"group": "g01"}, doc, locs)
+    assert "a thick white fog sky, no sun, dim as a starlit night" in line and "outdoors" in line
+    assert "daylight" not in line and "bright sun" not in line
+
+
+def test_a_picture_with_nobody_asks_for_no_eyes_and_no_figure():
+    s = scene(1, "g01", "detail", [], action="Bare reddish ground.")
+    text = K.klein_prompt(s, DOC, 1, dict(BIBLE, style="Anime, expressive anime eyes, soft light"), LOCS)["text"]
+    assert "expressive anime eyes" not in text and "no silhouette" in text and K.REF_POSE not in text
+
+
+def test_over_the_shoulder_reads_over_and_past_and_drops_the_back_persons_pose():
+    for word in ("past", "over"):
+        s = scene(1, "g01", "over-the-shoulder",
+                  [cast("maren_vale", pose="standing in the doorway"), cast("tobias_reed", pose="leaning in")],
+                  action=f"Seen {word} Tobias Reed's shoulder, Maren smiles from the doorway.")
+        text = K.klein_prompt(s, DOC, 1, BIBLE, LOCS)["text"]
+        assert "the near foreground is the back of the lean young man" in text            # Tobias, not the first
+        back = block_line(text, "Tobias Reed")
+        assert back.startswith("[NEAR FOREGROUND, SEEN FROM BEHIND") and "leaning in" not in back
+        assert "standing in the doorway" in block_line(text, "Maren Vale")
+
+
+def test_no_back_view_without_a_named_shoulder_or_when_that_person_acts():
+    people = [cast("maren_vale", pose="reading"), cast("tobias_reed", pose="reaching for a book")]
+    for action in ("Tobias Reed slips a book off the shelf while Maren reads.",                     # no shoulder named
+                   "Seen over Tobias Reed's shoulder, Tobias Reed slips a book off the shelf."):   # the back one acts
+        text = K.klein_prompt(scene(1, "g01", "over-the-shoulder", people, action=action), DOC, 1, BIBLE, LOCS)["text"]
+        assert "SEEN FROM BEHIND" not in text and f"SHOT: {K.KSHOT_TEXT['medium']}." in text           # c9 s05
+
+
+def test_one_named_person_and_no_extras_never_get_plural_shot_wording():
+    # "the people full length" / "the people around them" with one person drew a second copy of them (c13 s15, c14 s45)
+    for shot in ("wide", "medium", "low-angle", "high-angle"):
+        doc = dict(DOC, scenes=[scene(1, "g01", shot, [cast("maren_vale")])])
+        t = K.klein_prompt(doc["scenes"][0], doc, 1, BIBLE, LOCS)["text"]
+        line = next(l for l in t.splitlines() if l.startswith("SHOT:"))
+        assert "people" not in line, line
+    # with background extras (or two named people) the plural stays: someone else really is in the picture
+    doc = dict(DOC, scenes=[scene(1, "g01", "medium", [cast("maren_vale")], others="two gulls on a post")])
+    t = K.klein_prompt(doc["scenes"][0], doc, 1, BIBLE, LOCS)["text"]
+    assert "the people around them" in next(l for l in t.splitlines() if l.startswith("SHOT:"))
+
+
+def test_the_first_word_the_of_a_name_is_never_an_alias():
+    # "The Owl" made every sentence starting with "The" read "Someone out of view ..." (EP1-EP2 prompts, c13 s48)
+    bible = {"characters": {"owl": {"display": "The Owl"}, "maren_vale": {"display": "Maren Vale"}}}
+    out = K._offstage("The axe blade flashes. The Owl watches. Maren waits.", bible, [])
+    assert out == "The axe blade flashes. someone out of view watches. someone out of view waits."
+
+
+def test_an_over_the_shoulder_front_person_lying_down_is_not_told_to_face_the_camera():
+    # "faces the camera, from the chest up" drew the lying person standing, beside a copy lying down (c13 s48)
+    for pose, want in (("lying flat on its back", "lies on the ground beyond them, as described above, drawn once"),
+                       ("leaning in", "faces the camera, from the chest up")):
+        s = scene(1, "g01", "over-the-shoulder",
+                  [cast("maren_vale", pose="standing"), cast("tobias_reed", pose=pose)],
+                  action="Seen over Maren Vale's shoulder, the young man is there.")
+        text = K.klein_prompt(s, DOC, 1, BIBLE, LOCS)["text"]
+        assert f"the lean young man, curly red hair {want}" in text

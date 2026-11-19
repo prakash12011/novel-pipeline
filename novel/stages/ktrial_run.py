@@ -25,6 +25,10 @@ in the session and in server.json (FLUX stays the default), and `run` then makes
 with the place plate sent as the first reference (Qwen edits `image_1`). `up --ngrok-dataset SLUG` takes the ngrok token
 from another private Kaggle dataset of the account (default `ngrok-token`), for a second ngrok account.
 
+`up` with Qwen starts TWO notebooks on two accounts (images.servers; Kaggle queues a second notebook on the same
+account): server.json is notebook 1 (named tunnel / ngrok), server-2.json notebook 2 (<book>-ktrial-comfy-2 on
+images.kaggle_profile_2 or the next free account, its own dataset, the named tunnel images.cf_hostname_2, no ngrok). `run` feeds every answering server from one queue (kpool); a server that answers later joins.
+
 Test hook: $NOVEL_KTRIAL_URL_OVERRIDE replaces the address computed from a domain (`https://<host>`) in `up` and `url`,
 so a test can point the "domain" at a local fake ComfyUI. Never set it for real use.
 
@@ -125,25 +129,31 @@ def _book(args, plan: dict | None = None) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(name).lower()).strip("-")
 
 
-def dataset_slug(book: str) -> str:
-    return f"{book}-ktrial"
+def dataset_slug(book: str, n: int = 1) -> str:
+    return f"{book}-ktrial" + ("" if n == 1 else f"-{n}")
 
 
-def kernel_slug(book: str) -> str:
+def kernel_slug(book: str, n: int = 1) -> str:
     """Not the dataset's name: Kaggle answered 409 Conflict for a kernel slug equal to a dataset slug."""
-    return f"{book}-ktrial-comfy"
+    return f"{book}-ktrial-comfy" + ("" if n == 1 else f"-{n}")
 
 
-def server_path(trial: Path) -> Path:
-    return trial / "server.json"
+def server_path(trial: Path, n: int = 1) -> Path:
+    """server.json is notebook 1 (as before two notebooks), server-2.json notebook 2."""
+    return trial / ("server.json" if n == 1 else f"server-{n}.json")
 
 
-def load_server(trial: Path) -> dict:
-    return _read_json(server_path(trial), {}) or {}
+def load_server(trial: Path, n: int = 1) -> dict:
+    return _read_json(server_path(trial, n), {}) or {}
 
 
-def save_server(trial: Path, server: dict) -> None:
-    _write_json(server_path(trial), server)
+def save_server(trial: Path, server: dict, n: int = 1) -> None:
+    _write_json(server_path(trial, n), dict(server, n=n))
+
+
+def load_servers(trial: Path) -> list[dict]:
+    """The recorded servers, notebook 1 first, each with its number `n`."""
+    return [dict(s, n=n) for n in (1, 2, 3) if (s := load_server(trial, n))]
 
 
 def _kernel_word(ref: str) -> tuple[str, str]:
@@ -232,9 +242,14 @@ def _manual_steps(server: dict, chapter) -> None:
 
 # ---------------------------------------------------------------- up
 
+CF_TOKENS = {1: ("cloudflare-tunnel", "CLOUDFLARE_TUNNEL_TOKEN"),            # per notebook: the named tunnel's token
+             2: ("cloudflare-tunnel-2", "CLOUDFLARE_TUNNEL_TOKEN_2"),        # (images.cf_hostname / cf_hostname_2
+             3: ("cloudflare-tunnel-3", "CLOUDFLARE_TUNNEL_TOKEN_3")}        #  / cf_hostname_3)
+
+
 def _stage_dataset(trial: Path, book: str, user: str, marker: str, args,
-                   domain: str | None = None) -> tuple[Path, dict]:
-    st = trial / "kaggle" / "dataset"
+                   domain: str | None = None, n: int = 1) -> tuple[Path, dict]:
+    st = trial / "kaggle" / ("dataset" if n == 1 else f"dataset-{n}")
     if st.exists():
         shutil.rmtree(st)
     st.mkdir(parents=True)
@@ -242,7 +257,8 @@ def _stage_dataset(trial: Path, book: str, user: str, marker: str, args,
                "idle_minutes": getattr(args, "idle_minutes", None) or 20,
                "max_hours": getattr(args, "max_hours", None) or 6,
                "gpu": getattr(args, "gpu", None) if getattr(args, "gpu", None) is not None else 1,
-               "tunnel": getattr(args, "tunnel", None) or "ngrok"}
+               "tunnel": getattr(args, "tunnel", None) or "ngrok",
+               "second_gpu": False}         # the second T4 never fits in RAM next to the first card's model
     if getattr(args, "model", None) not in (None, kcomfy.FLUX):
         session["model"] = args.model
     if getattr(args, "comfy_arg", None):
@@ -256,16 +272,16 @@ def _stage_dataset(trial: Path, book: str, user: str, marker: str, args,
         session["domain"] = domain
     if getattr(args, "cf_hostname", None):
         session["cf_hostname"] = args.cf_hostname      # the named Cloudflare tunnel: ngrok's fallback, fixed address
+        session["cf_dataset"], session["cf_file"] = CF_TOKENS[n]       # where the notebook finds its token
+    if getattr(args, "split_encoder", False):
+        session["split_encoder"] = True                # Qwen: the text encoder on the second T4 (kcomfy.QW_SPLIT_LAYOUT)
     shutil.copy2(Path(kcomfy.__file__), st / "kcomfy.py")
     (st / "session.json").write_text(json.dumps(session, indent=1), encoding="utf-8")
     (st / marker).write_text("ktrial", encoding="utf-8")
     (st / "dataset-metadata.json").write_text(json.dumps(
-        {"title": dataset_slug(book), "id": f"{user}/{dataset_slug(book)}",
+        {"title": dataset_slug(book, n), "id": f"{user}/{dataset_slug(book, n)}",
          "licenses": [{"name": "unknown"}]}, indent=2), encoding="utf-8")
     return st, session
-
-
-CF_SLUG, CF_FILE = "cloudflare-tunnel", "CLOUDFLARE_TUNNEL_TOKEN"     # the named tunnel's token (images.cf_hostname)
 
 
 def ensure_ngrok_dataset(profile: str, user: str, slug: str = "ngrok-token", name: str = "NGROK_AUTHTOKEN") -> None:
@@ -283,25 +299,25 @@ def ensure_ngrok_dataset(profile: str, user: str, slug: str = "ngrok-token", nam
         shutil.copy2(src, Path(tmp) / name)
         (Path(tmp) / "dataset-metadata.json").write_text(json.dumps(
             {"title": slug, "id": f"{user}/{slug}", "licenses": [{"name": "CC0-1.0"}]}), encoding="utf-8")
-        print(f"uploading the ngrok token to {user}/{slug} (private): "
+        print(f"uploading the token {name} to {user}/{slug} (private): "
               + kaggle_as(profile, "datasets", "create", "-p", tmp).strip()[-160:])
 
 
 def _stage_kernel(trial: Path, book: str, user: str, tunnel: str, ngrok_dataset: str = "ngrok-token",
-                  cloudflare: bool = False) -> Path:
-    kd = trial / "kaggle" / "kernel"
+                  cloudflare: bool = False, n: int = 1) -> Path:
+    kd = trial / "kaggle" / ("kernel" if n == 1 else f"kernel-{n}")
     kd.mkdir(parents=True, exist_ok=True)
-    ks = kernel_slug(book)
+    ks = kernel_slug(book, n)
     for old in kd.glob("*.ipynb"):
         old.unlink()                 # kernels push rejects a folder with a stray notebook
     nb = kd / f"{ks}.ipynb"
     shutil.copy2(NOTEBOOK, nb)
-    nb.write_text(nb.read_text(encoding="utf-8").replace("@DATASET@", dataset_slug(book)), encoding="utf-8")
-    sources = [f"{user}/{dataset_slug(book)}", f"{user}/hf-token"]
+    nb.write_text(nb.read_text(encoding="utf-8").replace("@DATASET@", dataset_slug(book, n)), encoding="utf-8")
+    sources = [f"{user}/{dataset_slug(book, n)}", f"{user}/hf-token"]
     if tunnel == "ngrok":
         sources.append(f"{user}/{ngrok_dataset}")    # only the ngrok tunnel reads it
     if cloudflare:
-        sources.append(f"{user}/{CF_SLUG}")         # the named tunnel's token
+        sources.append(f"{user}/{CF_TOKENS[n][0]}")  # the named tunnel's token
     (kd / "kernel-metadata.json").write_text(json.dumps({
         "id": f"{user}/{ks}", "title": ks, "code_file": f"{ks}.ipynb", "language": "python",
         "kernel_type": "notebook", "is_private": True, "enable_gpu": True,
@@ -350,6 +366,63 @@ def _wait_for_server(trial: Path, server: dict) -> int:
         time.sleep(poll)
 
 
+def _push(trial: Path, book: str, user: str, profile: str, args, n: int, domain: str | None,
+          cf: str | None, dry: bool) -> dict | None:
+    """Stage notebook n and push it. Returns its server record (saved), {} for a dry run, None when the push failed."""
+    tunnel = getattr(args, "tunnel", None) or "ngrok"
+    marker = f"push-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}.txt"
+    st, session = _stage_dataset(trial, book, user, marker, args, domain, n)
+    kd = _stage_kernel(trial, book, user, tunnel, session.get("ngrok_dataset") or "ngrok-token", cloudflare=bool(cf), n=n)
+    print(f"staged server {n} for {user} (profile {profile}), tunnel {tunnel}"
+          + (f", domain {domain}" if domain else "") + f", model {session.get('model', kcomfy.FLUX)}")
+    if dry:
+        print(f"dry run - nothing is called. Would upload dataset {user}/{dataset_slug(book, n)} and push kernel "
+              f"{user}/{kernel_slug(book, n)}:")
+        for f in sorted(st.rglob("*")):
+            if f.is_file():
+                print(f"  dataset  {f.relative_to(st).as_posix()}  ({f.stat().st_size} bytes)")
+        for f in sorted(kd.glob("*")):
+            print(f"  kernel   {f.name}")
+        print(f"look in {trial / 'kaggle'}")
+        return {}
+    activate_token(profile)         # selects the login, so only once we really upload
+    episode_tts.upload(st, f"{user}/{dataset_slug(book, n)}", marker)
+    out = kaggle("kernels", "push", "-p", ".", cwd=kd, timeout=600)
+    if "successfully pushed" not in out:
+        print(f"push failed:\n{out.strip()[-400:]}")
+        return None
+    print("  " + [l for l in out.splitlines() if "pushed" in l][0].strip())
+    server = {"account": profile, "user": user, "kernel": f"{user}/{kernel_slug(book, n)}",
+              "dataset": f"{user}/{dataset_slug(book, n)}", "comfy_user": session["user"],
+              "password": session["password"], "tunnel": session["tunnel"], "pushed": marker[5:-4],
+              "url": _url_for(cf or domain) if (cf or domain) else None}
+    if domain:
+        server["domain"] = domain
+    if cf and domain:
+        server["fallback_url"] = _url_for(domain)      # the named Cloudflare tunnel first, ngrok second
+    if session.get("model"):
+        server["model"] = session["model"]
+    save_server(trial, server, n)
+    return dict(server, n=n)
+
+
+def _second_notebook(args, settings) -> tuple[str | None, str]:
+    """(the second notebook's Cloudflare hostname, or None, and why there is none). It needs Qwen, images.servers >= 2,
+    images.cf_hostname_2 and the token file; it uses no ngrok (the fixed ngrok domain allows one endpoint)."""
+    want = getattr(args, "servers", None) or settings.get("images.servers", default=1)
+    host = settings.get("images.cf_hostname_2", default=None)
+    token = NOTEBOOK.parent / CF_TOKENS[2][1]
+    if int(want) < 2:
+        return None, ""
+    if getattr(args, "model", None) != kcomfy.QWEN:
+        return None, "only a Qwen server has a second notebook"
+    if not host:
+        return None, "images.cf_hostname_2 is not set"
+    if not token.is_file():
+        return None, f"{token} is missing"
+    return normalise_host(str(host), "cf_hostname_2"), ""
+
+
 def cmd_up(args, trial: Path) -> int:
     trial = Path(trial)
     plan = _read_json(trial / "plan.json", {})
@@ -361,16 +434,16 @@ def cmd_up(args, trial: Path) -> int:
         domain = ngrok_domain(args, save=not dry)        # a bad value stops here, before anything is staged or called
     elif getattr(args, "domain", None):
         print("note: --domain is only used with the ngrok tunnel; ignored")
-    old = load_server(trial)
-    if old and not old.get("stopped") and not dry:
-        activate_token(old["account"])
-        word, line = _kernel_word(old["kernel"])
-        if word in ("RUNNING", "QUEUED"):
-            print(f"the server pushed at {old.get('pushed')} ({old['kernel']}) is still {word}. "
-                  f"Use `novel ktrial status` to look at it or `novel ktrial down` to stop it first.")
-            return 1
-        if word == "UNKNOWN":
-            print(f"note: could not read the status of {old['kernel']} ({line[-100:]}); pushing anyway")
+    for old in load_servers(trial):
+        if not old.get("stopped") and not dry:
+            activate_token(old["account"])
+            word, line = _kernel_word(old["kernel"])
+            if word in ("RUNNING", "QUEUED"):
+                print(f"the server pushed at {old.get('pushed')} ({old['kernel']}) is still {word}. "
+                      f"Use `novel ktrial status` to look at it or `novel ktrial down` to stop it first.")
+                return 1
+            if word == "UNKNOWN":
+                print(f"note: could not read the status of {old['kernel']} ({line[-100:]}); pushing anyway")
     from novel.core import settings
     from .account import free_profile
     profile = getattr(args, "account", None) or free_profile(settings.get("images.kaggle_profile", default=None))
@@ -381,41 +454,34 @@ def cmd_up(args, trial: Path) -> int:
     cf = normalise_host(str(settings.get("images.cf_hostname", default="") or ""), "cf_hostname") \
         if settings.get("images.cf_hostname", default=None) and tunnel == "ngrok" else None
     if cf and not dry:
-        ensure_ngrok_dataset(profile, user, CF_SLUG, CF_FILE)
+        ensure_ngrok_dataset(profile, user, *CF_TOKENS[1])
     args.cf_hostname = cf
-    marker = f"push-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}.txt"
-    st, session = _stage_dataset(trial, book, user, marker, args, domain)
-    kd = _stage_kernel(trial, book, user, tunnel, session.get("ngrok_dataset") or "ngrok-token", cloudflare=bool(cf))
-    print(f"staged server for {user} (profile {profile}), tunnel {tunnel}"
-          + (f", domain {domain}" if domain else "") + f", model {session.get('model', kcomfy.FLUX)}")
-    if dry:
-        print(f"dry run - nothing is called. Would upload dataset {user}/{dataset_slug(book)} and push kernel "
-              f"{user}/{kernel_slug(book)}:")
-        for f in sorted(st.rglob("*")):
-            if f.is_file():
-                print(f"  dataset  {f.relative_to(st).as_posix()}  ({f.stat().st_size} bytes)")
-        for f in sorted(kd.glob("*")):
-            print(f"  kernel   {f.name}")
-        print(f"look in {trial / 'kaggle'}")
-        return 0
-    activate_token(profile)         # selects the login, so only once we really upload
-    episode_tts.upload(st, f"{user}/{dataset_slug(book)}", marker)
-    out = kaggle("kernels", "push", "-p", ".", cwd=kd, timeout=600)
-    if "successfully pushed" not in out:
-        print(f"push failed:\n{out.strip()[-400:]}")
+    if not hasattr(args, "split_encoder"):
+        args.split_encoder = bool(settings.get("images.split_encoder", default=False))
+    cf2, why = _second_notebook(args, settings)
+    if why:
+        print(f"one server only: {why}")
+    server = _push(trial, book, user, profile, args, 1, domain, cf, dry)
+    if server is None:
         return 1
-    print("  " + [l for l in out.splitlines() if "pushed" in l][0].strip())
-    server = {"account": profile, "user": user, "kernel": f"{user}/{kernel_slug(book)}",
-              "dataset": f"{user}/{dataset_slug(book)}", "comfy_user": session["user"],
-              "password": session["password"], "tunnel": session["tunnel"], "pushed": marker[5:-4],
-              "url": _url_for(cf or domain) if (cf or domain) else None}
-    if domain:
-        server["domain"] = domain
-    if cf and domain:
-        server["fallback_url"] = _url_for(domain)      # the named Cloudflare tunnel first, ngrok second
-    if session.get("model"):
-        server["model"] = session["model"]
-    save_server(trial, server)
+    if cf2:
+        two = SimpleNamespace(**{**vars(args), "tunnel": "cloudflared", "ngrok_dataset": None, "cf_hostname": cf2})
+        try:
+            # its own account: a second notebook on the same account waits in Kaggle's queue until the first ends
+            profile2 = getattr(args, "account2", None) or free_profile(
+                settings.get("images.kaggle_profile_2", default=None), skip={profile})
+            if profile2 == profile:
+                raise SystemExit(f"no second Kaggle account (kaggle.pick_free is off and {profile} is the only one)")
+            user2 = owner(profile2)
+            if not dry:
+                ensure_ngrok_dataset(profile2, user2, *CF_TOKENS[2])
+            if _push(trial, book, user2, profile2, two, 2, None, cf2, dry) is None:
+                print("note: the second notebook could not be pushed; going on with one server")
+        except SystemExit as e:                        # no free account, or its token dataset could not be uploaded
+            print(f"note: the second notebook was not started ({e}); going on with one server")
+    if dry:
+        return 0
+    activate_token(profile)                            # the wait reads notebook 1's state with its own login
     if not server["url"]:                              # no fixed address (no ngrok domain, no Cloudflare hostname)
         print("pushed.")
         _manual_steps(server, getattr(args, "chapter", None))
@@ -423,19 +489,12 @@ def cmd_up(args, trial: Path) -> int:
     if getattr(args, "no_wait", False):
         print(f"pushed. The address is {server['url']}; `novel ktrial status` shows whether the server answers.")
         return 0
-    return _wait_for_server(trial, server)
+    return _wait_for_server(trial, server)       # the second one joins when it answers (`run`)
 
 
 # ---------------------------------------------------------------- status and down
 
-def cmd_status(args, trial: Path) -> int:
-    """Kernel state, the stored address, whether the server answers. The log is read only once the kernel has
-    ended: Kaggle returns an empty log for a running one."""
-    trial = Path(trial)
-    server = load_server(trial)
-    if not server:
-        print("no server was started for this trial (`novel ktrial up`)")
-        return 1
+def _status_one(args, server: dict) -> None:
     activate_token(server["account"])
     word, line = _kernel_word(server["kernel"])
     print(line or f"{server['kernel']}: {word}")
@@ -450,13 +509,25 @@ def cmd_status(args, trial: Path) -> int:
             print("address: none stored (the kernel has ended)")
         else:
             _manual_steps(server, getattr(args, "chapter", None))
-        return 0
+        return
     print(f"address: {server['url']}")
     try:
         _comfy(server, timeout=15, retries=1, backoff=0.5).ping()
         print("the server answers")
     except ComfyError as e:
         print(f"the server does not answer: {e}")
+
+
+def cmd_status(args, trial: Path) -> int:
+    """Kernel state, the stored address, whether the server answers, for each notebook. The log is read only once
+    the kernel has ended: Kaggle returns an empty log for a running one."""
+    servers = load_servers(Path(trial))
+    if not servers:
+        print("no server was started for this trial (`novel ktrial up`)")
+        return 1
+    for s in servers:
+        print(f"server {s['n']}:")
+        _status_one(args, s)
     return 0
 
 
@@ -482,10 +553,18 @@ def cmd_url(args, trial: Path) -> int:
 
 def cmd_down(args, trial: Path) -> int:
     trial = Path(trial)
-    server = load_server(trial)
-    if not server:
+    servers = load_servers(trial)
+    if not servers:
         print("no server was started for this trial")
         return 0
+    codes = []
+    for s in servers:
+        print(f"server {s['n']}:")
+        codes.append(_down_one(trial, s))
+    return max(codes)
+
+
+def _down_one(trial: Path, server: dict) -> int:
     if not server.get("url"):
         print("no URL is recorded, so there is no stop file to send. The kernel ends by itself after its idle "
               "limit; to stop it now, cancel it on kaggle.com.")
@@ -499,13 +578,14 @@ def cmd_down(args, trial: Path) -> int:
               f"RUNNING on kaggle.com it ends after its idle limit.")
         server["stop_sent"] = False
     server["stopped"] = _now()
-    save_server(trial, server)
+    save_server(trial, server, server["n"])
     return 0
 
 
 # ---------------------------------------------------------------- run
 
-_LOG_LOCK = threading.Lock()          # two cards: two workers append to one log
+_LOG_LOCK = threading.Lock()          # two servers: two workers append to one log
+_COUNT_LOCK = threading.Lock()        # and bump the failure counts of one run
 
 
 def _log(root: Path, entry: dict) -> None:
@@ -589,6 +669,10 @@ class _Run:
         self.done = 0                           # pictures attempted, of self.total
         self.t0 = time.monotonic()
         self.live = None                        # kqa.Live: picture QA right after each shot (cmd_run with qa)
+        self.publish: Path | None = None        # the episode's images/cNNNN: each finished shot is copied there at once
+        self.n = 1                              # which notebook's server this is
+        self.group = [self]                     # every run of one command (one per server): counts are summed
+        self.pool = None                        # the kpool.Pool the runs share (QA redraws go through it)
 
     def upload(self, ref: dict) -> str:
         """Upload a reference once per run. The picture on disk is the truth: a missing one is an error."""
@@ -629,8 +713,14 @@ class _Run:
         os.replace(tmp, out)
         if self.model != kcomfy.FLUX:           # the prompt as sent (the FLUX one is written by `prompts`)
             out.with_suffix(".prompt.txt").write_bytes(sent.encode("utf-8"))
+        if self.publish is not None and kind == "shot":     # production gets it now, a QA redraw replaces it
+            self.publish.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(out, self.publish / f"{out.stem}-2k.jpg")
+            if out.with_suffix(".prompt.txt").exists():
+                shutil.copy2(out.with_suffix(".prompt.txt"), self.publish / f"{out.stem}.prompt.txt")
         meta = {"id": ident, "seed": seed, "seconds": round(took, 2), "refs": [Path(r["file"]).name for r in refs],
-                "width": w, "height": h, "bytes": len(jpeg), **kcomfy.model_info(self.model), "at": _now()}
+                "width": w, "height": h, "bytes": len(jpeg), **kcomfy.model_info(self.model),
+                "server": getattr(self, "n", 1), "at": _now()}         # which notebook drew it (two share the queue)
         _write_json(_meta_path(out), meta)
         _log(self.root, dict(meta, kind=kind))
         self.secs.append(took)
@@ -642,20 +732,25 @@ class _Run:
         self.upload({"role": "place", "group": group, "file": plate["out"]})
 
     def progress(self, ident: str, meta: dict) -> None:
-        self.done += 1
-        avg = sum(self.secs) / len(self.secs)
-        left = max(self.total - self.done, 0)
+        with _COUNT_LOCK:
+            self.done += 1
+            secs = [x for r in self.group for x in r.secs]
+            avg = sum(secs) / len(secs)
+            left = max(self.total - sum(r.done for r in self.group), 0)
         warn = f"  WARNING small file ({meta['bytes'] // 1000} kB): check it is not black" \
             if meta["bytes"] < SMALL_BYTES else ""
         print(f"  {ident}  {meta['seconds']:.1f}s  avg {avg:.1f}s  {left} left, ~{left * avg / 60:.0f} min{warn}",
               flush=True)
 
     def summary(self) -> None:
-        print(f"made {self.made}, skipped {self.skipped}, failed {self.failed}")
-        if self.secs:
-            avg = sum(self.secs) / len(self.secs)
-            print(f"seconds per picture: average {avg:.1f}, median {statistics.median(self.secs):.1f}; "
-                  f"{sum(self.secs) / 60:.1f} min of generation; {PROJECT_PICTURES} pictures would take about "
+        """One summary for every run of the command (the counts of all servers added up)."""
+        g = self.group
+        print(f"made {sum(r.made for r in g)}, skipped {sum(r.skipped for r in g)}, failed {sum(r.failed for r in g)}")
+        secs = [x for r in g for x in r.secs]
+        if secs:
+            avg = sum(secs) / len(secs)
+            print(f"seconds per picture: average {avg:.1f}, median {statistics.median(secs):.1f}; "
+                  f"{sum(secs) / 60:.1f} min of generation; {PROJECT_PICTURES} pictures would take about "
                   f"{avg * PROJECT_PICTURES / 3600:.1f} h")
 
 
@@ -855,36 +950,57 @@ def cmd_run(args, trial: Path) -> int:
         print(f"via OpenRouter, model {korouter.MODEL}, resolution {run.resolution}, budget ${run.budget:.2f}; "
               f"pictures go to {run.root}")
     else:
-        server = load_server(trial)
-        if not server.get("url"):
+        records = [s for s in load_servers(trial) if s.get("url")]
+        if not records:
             print("no server address recorded: run `novel ktrial up` (or `novel ktrial url ADDRESS` to store it by hand)")
             return 1
+        server = records[0]
         model = server.get("model") or kcomfy.FLUX
-        live = answering(server, retries=2)                      # a dead tunnel should not cost half a minute
-        if live is None:
+        waiting = []                                             # recorded but not answering (yet): may join later
+        runs = []
+        for s in records:
+            live = answering(s, retries=2)                       # a dead tunnel should not cost half a minute
+            if live is None:
+                waiting.append(s)
+                continue
+            if live["url"] != s["url"]:
+                save_server(trial, live, s["n"])
+            runs.append(_server_run(live, trial, plan, model))
+        if not runs:
             print(f"the server at {server['url']} does not answer"
                   + (f" (nor at {server['fallback_url']})" if server.get("fallback_url") else "") + ".\n"
                   f"Check it with `novel ktrial status`; if it has stopped, start a new one with `novel ktrial up`.")
             return 1
-        if live["url"] != server["url"]:
-            save_server(trial, live)
-        server = live
-        comfy = _comfy(server)
-        run = _Run(comfy, trial, plan, model)
+        run = runs[0]
         if model != kcomfy.FLUX:
             info = kcomfy.model_info(model)
             print(f"model {info['model']} + {info['text_encoder']}; pictures go to {run.root}")
-        second = _second_card(server) if model == kcomfy.QWEN else None
+        if len(runs) > 1 or waiting:
+            print(f"servers: {', '.join(str(r.n) for r in runs)} answer"
+                  + (f"; {', '.join(str(s['n']) for s in waiting)} will join when it answers" if waiting else ""))
+
+        publish = getattr(args, "publish", None)
+
+        def join():
+            for s in list(waiting):
+                if (live := answering(s)) is not None:
+                    waiting.remove(s)
+                    late = _server_run(live, trial, plan, model)
+                    late.publish = publish
+                    return late
+
         live = _qa_live(args, trial, plan, run) if getattr(args, "qa", False) and model == kcomfy.QWEN else None
-        if second is not None and not plan["plates"]:
-            two = _Run(second, trial, plan, model)
-            run.live = two.live = live
-            rc = _execute_two([run, two], args, plan)
-        else:
-            run.live = live
-            rc = _execute(run, args, plan)
+        for r in runs:
+            r.live, r.publish = live, publish
+        rc = _execute(runs, args, plan, join if waiting else None)
         return _qa_finish(live, run, plan, rc)
     return _execute(run, args, plan)
+
+
+def _server_run(server: dict, trial: Path, plan: dict, model: str) -> _Run:
+    run = _Run(_comfy(server), trial, plan, model)
+    run.n = server["n"]
+    return run
 
 
 def _qa_item(run: _Run, s: dict) -> dict:
@@ -909,9 +1025,17 @@ def _qa_live(args, trial: Path, plan: dict, run: _Run):
 
     def redraw(it, fix):
         s = shots[it["id"]]
-        text = (trial / s["prompt"]).read_text(encoding="utf-8").strip() + ("\n\n" + fix if fix else "")
-        seed = _next_seed(run.root / s["out"], s["seed"], False) + 1000
-        run.make("shot", it["id"], s, text, seed, s["refs"], _stamp())
+
+        def job(r):                             # r: whichever server is free
+            text = (trial / s["prompt"]).read_text(encoding="utf-8").strip() + ("\n\n" + fix if fix else "")
+            seed = _next_seed(r.root / s["out"], s["seed"], False) + 1000
+            r.make("shot", it["id"], s, text, seed, s["refs"], _stamp())
+            with live.lock:
+                live.rec[it["id"]]["server"] = r.n      # saved with the next status change
+        if run.pool is None:                    # `novel ktrial qa`: no queue, the one server
+            job(run)
+        else:
+            run.pool.add(f"{it['id']}-redraw", job, front=True).result()
 
     live = kqa.Live(kqa.QA(cfg, key), run.root / "qa.json", redraw)
     live.queued([i for i, s in shots.items()
@@ -921,7 +1045,8 @@ def _qa_live(args, trial: Path, plan: dict, run: _Run):
 
 
 def _qa_finish(live, run: _Run, plan: dict, rc: int) -> int:
-    """Check the pictures that were already there and never checked, wait for the workers, print the status."""
+    """Check the pictures that were already there and never checked (`run` does that itself, while it draws; this is
+    for `novel ktrial qa`), wait for the checks, print the status."""
     if live is None:
         return rc
     from novel import kqa
@@ -946,31 +1071,13 @@ def answering(server: dict, retries: int = 1) -> dict | None:
     return None
 
 
-def _second_card(server: dict) -> Comfy | None:
-    """The server's second ComfyUI (the other T4) behind <url>/g2, or None when it is not running."""
-    two = dict(server, url=server["url"].rstrip("/") + kcomfy.SECOND_PREFIX)
-    try:
-        _comfy(two, retries=0, backoff=0.5).ping()
-    except ComfyError:
-        return None
-    return _comfy(two)
-
-
-def _execute_two(runs: list, args, plan: dict) -> int:
-    """Both cards at once: the chosen pictures alternate between them, each card works through its own half."""
-    from concurrent.futures import ThreadPoolExecutor
-    shots, _ = _select(plan, getattr(args, "only", None), getattr(args, "limit", None))
-    ids = [_short(s) for s in shots]
-    halves = [h for h in (ids[0::2], ids[1::2]) if h]
-    print(f"two cards: {' + '.join(str(len(h)) for h in halves)} pictures")
-    jobs = [(r, SimpleNamespace(**{**vars(args), "only": ",".join(h), "limit": None})) for r, h in zip(runs, halves)]
-    with ThreadPoolExecutor(len(jobs)) as pool:
-        codes = [f.result() for f in [pool.submit(_execute, r, a, plan) for r, a in jobs]]
-    return max(codes, default=0)
-
-
-def _execute(run: _Run, args, plan: dict) -> int:
-    """The plates, then the shots: the same for both ways of making a picture. Everything is written under run.root."""
+def _execute(runs, args, plan: dict, join=None) -> int:
+    """The plates, then the shots, through one queue (kpool) that every server draws from: whichever is free takes the
+    next picture, and a shot waits for its place picture. Everything is written under run.root. `runs`: one _Run per
+    server (or a single one); `join()` returns one more once a late server answers."""
+    from .kpool import Pool, PoolStopped
+    runs = [runs] if isinstance(runs, _Run) else list(runs)
+    run = runs[0]
     root = run.root
     reroll, redo = getattr(args, "reroll", False), getattr(args, "redo", False)
     shots, named_groups = _select(plan, getattr(args, "only", None), getattr(args, "limit", None))
@@ -986,72 +1093,101 @@ def _execute(run: _Run, args, plan: dict) -> int:
     run.skipped = (len(wanted) - len(plate_todo)) + (len(shots) - len(shot_todo))
     print(f"{len(wanted)} places ({len(plate_todo)} to make), {len(shots)} pictures ({len(shot_todo)} to make)")
 
-    fails = 0
-    broken_groups: set[str] = set()
-    try:
-        for g in wanted:
-            p = plates[g]
-            out = root / p["out"]
-            if g not in plate_todo:
-                continue                        # reused: uploaded when the first picture of its group needs it
-            seed = _next_seed(out, p["seed"], reroll) if g in regen else int(p["seed"])
-            try:
-                text = (run.trial / p["prompt"]).read_text(encoding="utf-8").strip()
-                meta = run.make("plate", g, p, text, seed, [], stamp if g in regen else None)
-                run.prepare_plate(g, p)
-            except RUN_ERRORS as e:
-                fails = _failed(run, "plate", g, e, fails)
-                if not _valid_jpeg(out):
-                    broken_groups.add(g)
-                if fails >= MAX_FAILS_IN_ROW:
-                    return _stop_after_failures(run)
-                continue
-            fails = 0
-            run.progress(g, meta)
+    live, budget_stop = run.live, []
 
-        for s in shot_todo:
-            ident = _short(s)
-            if s["group"] in broken_groups:
-                print(f"  {ident}: skipped, its place picture {s['group']} is not available")
-                run.failed += 1
-                run.done += 1
-                continue
+    def joined():
+        late = join()
+        if late is not None:
+            late.group, late.total, late.live, late.pool = runs, run.total, live, pool
+            runs.append(late)
+        return late
+
+    pool = Pool(runs, join=joined if join else None)
+    for r in runs:
+        r.group, r.total, r.pool = runs, run.total, pool
+
+    def settle(kind: str, ident: str):
+        def done(fut):                          # a job that failed for good (not one that went to another server)
+            e = fut.exception()
+            if isinstance(e, _BudgetStop):
+                if not budget_stop:
+                    print(f"  {e}")
+                budget_stop.append(e)
+                pool.halt()
+            elif e is not None and not isinstance(e, PoolStopped):
+                if kind == "shot" and live:
+                    live.set(ident, "draw_failed", error=str(e)[:300])
+                _failed(run, kind, ident, e)
+        return done
+
+    def plate_job(g: str, p: dict):
+        def job(r):
+            out = root / p["out"]
+            seed = _next_seed(out, p["seed"], reroll) if g in regen else int(p["seed"])
+            text = (r.trial / p["prompt"]).read_text(encoding="utf-8").strip()
+            meta = r.make("plate", g, p, text, seed, [], stamp if g in regen else None)
+            r.prepare_plate(g, p)
+            r.progress(g, meta)
+        return job
+
+    def shot_job(s: dict):
+        def job(r):
+            ident, g = _short(s), s["group"]
+            if g in plate_futs and not _valid_jpeg(root / plates[g]["out"]):
+                print(f"  {ident}: skipped, its place picture {g} is not available")
+                with _COUNT_LOCK:
+                    r.failed += 1
+                    r.done += 1
+                return
             out = root / s["out"]
             seed = _next_seed(out, s["seed"], reroll) if reroll or redo else int(s["seed"])
-            if run.live:
-                run.live.drawing(ident)
-            try:
-                text = (run.trial / s["prompt"]).read_text(encoding="utf-8").strip()
-                meta = run.make("shot", ident, s, text, seed, s["refs"], stamp if reroll or redo else None)
-            except RUN_ERRORS as e:
-                if run.live:
-                    run.live.set(ident, "draw_failed", error=str(e)[:300])
-                fails = _failed(run, "shot", ident, e, fails)
-                if fails >= MAX_FAILS_IN_ROW:
-                    return _stop_after_failures(run)
-                continue
-            fails = 0
-            run.progress(ident, meta)
-            if run.live:
-                run.live.drawn(_qa_item(run, s))
-    except _BudgetStop as e:
-        print(f"  {e}")
+            if r.live:
+                r.live.set(ident, "drawing", server=r.n)
+            text = (r.trial / s["prompt"]).read_text(encoding="utf-8").strip()
+            meta = r.make("shot", ident, s, text, seed, s["refs"], stamp if reroll or redo else None)
+            r.progress(ident, meta)
+            if r.live:
+                r.live.drawn(_qa_item(r, s))
+        return job
+
+    plate_futs = {}
+    for g in plate_todo:
+        plate_futs[g] = pool.add(g, plate_job(g, plates[g]))
+        plate_futs[g].add_done_callback(settle("plate", g))
+    for s in shot_todo:
+        f = pool.add(_short(s), shot_job(s), ready=plate_futs[s["group"]].done if s["group"] in plate_futs else None)
+        f.add_done_callback(settle("shot", _short(s)))
+    if live:      # pictures that are already there and never had a verdict: checked while the others are drawn
+        drawing = {_short(x) for x in shot_todo}
+        for s in plan["shots"]:
+            if (_short(s) not in drawing and _valid_jpeg(root / s["out"])
+                    and (live.rec.get(_short(s)) or {}).get("status") == "queued"):
+                live.drawn(_qa_item(run, s))
+    pool.finish(until=live.busy if live else None)      # with QA: until its checks (and redraws) are over
+
+    if budget_stop:
         run.summary()
         return 0
-    except KeyboardInterrupt:
+    if pool.interrupted:
         print("\nstopped by Ctrl+C; finished pictures stay, run again to continue")
         run.summary()
         return 130
+    if pool.tripped:
+        return _stop_after_failures(run)
+    if pool.dropped:
+        print("no server is left to draw the rest: finished pictures stay and a new run continues.")
+        run.summary()
+        return 1
     run.summary()
-    return 1 if run.failed else 0
+    return 1 if sum(r.failed for r in runs) else 0
 
 
-def _failed(run: _Run, kind: str, ident: str, err: Exception, fails: int) -> int:
+def _failed(run: _Run, kind: str, ident: str, err: Exception) -> None:
     print(f"  {ident}  FAILED: {err}", flush=True)
     _log(run.root, {"id": ident, "kind": kind, "error": str(err)[:500], "at": _now()})
-    run.failed += 1
-    run.done += 1
-    return fails + 1
+    with _COUNT_LOCK:
+        run.failed += 1
+        run.done += 1
 
 
 def _stop_after_failures(run: _Run) -> int:

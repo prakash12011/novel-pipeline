@@ -7,19 +7,20 @@ import argparse
 from novel import kcomfy
 from novel.core import context
 
-USAGE = ("usage: novel ktrial scenes --chapter N [--book B] [--ep N] [--max-characters 2] [--from-production]\n"
+USAGE = ("usage: novel ktrial scenes --chapter N [--book B] [--ep N] [--max-characters 4] [--from-production]\n"
          "                          [--force]\n"
          "       novel ktrial prompts --chapter N [--book B] [--ep N]\n"
          "       novel ktrial up --chapter N [--account NAME] [--tunnel ngrok|cloudflared] [--domain HOST]\n"
          "                       [--idle-minutes 20] [--max-hours 6] [--gpu 1] [--comfy-arg=--ARG ...] [--dry-run]\n"
          "                       [--model flux|minimax-h3|qwen-image-turbo] [--ngrok-dataset SLUG]\n"
-         "                       [--no-wait]\n"
-         "       novel ktrial url --chapter N ADDRESS     (store the server's address by hand: no fixed domain)\n"
-         "       novel ktrial status|down|report --chapter N\n"
+         "                       [--no-wait] [--servers 1|2]   (2: a second notebook on the Alt tunnel, joins when ready)\n"
+         "       novel ktrial url --chapter N ADDRESS     (store server 1's address by hand: no fixed domain)\n"
+         "       novel ktrial status|down|report --chapter N      (status and down cover both notebooks)\n"
          "       novel ktrial run --chapter N [--only s05,s07,g01] [--limit N] [--reroll] [--redo] [--plates-only]\n"
          "                        [--via kaggle|openrouter] [--resolution 1K|2K] [--budget D]\n"
          "       novel ktrial charsheet --chapter N [--keys a,b] [--missing]   (Qwen character sheets -> bible/qwen)\n"
-         "       novel ktrial front --chapter N [--keys a,b] [--redo]   (front views -> bible/qwen/front)\n"
+         "       novel ktrial front --chapter N [--keys a,b] [--redo]   (front views -> bible/qwen/front; run, images and\n"
+         "                                                              front share one queue over every server)\n"
          "       novel ktrial qa --chapter N [--status]   (picture QA by hand / the status list of each picture)\n"
          "       novel ktrial qa-probe --chapter N [--picture FILE]   (which QA models see pictures and answer)\n"
          "Everything else goes to <book>/_work/ktrial/c<chapter>; nothing in episodes/ is written.")
@@ -34,14 +35,17 @@ def build_parser(sub: str) -> argparse.ArgumentParser:
     ap.add_argument("--chapter", type=int, required=True, help="the chapter to try, e.g. 24")
     ap.add_argument("--ep", type=int, help="the episode (default: the one whose range holds the chapter)")
     if sub == "scenes":
-        ap.add_argument("--max-characters", type=int, default=2, help="most people in one picture (default 2)")
+        ap.add_argument("--max-characters", type=int, default=4, help="most people in one picture (default 4)")
         ap.add_argument("--from-production", action="store_true",
                         help="no Gemini call: copy the production scene file into the trial folder")
         ap.add_argument("--force", action="store_true", help="replace an existing trial scene file")
         ap.add_argument("--model", help="Gemini model for this run only (default: settings gemini.api_model)")
-        ap.add_argument("--writer", choices=("gemini", "opus"), default="gemini",
-                        help="who writes the lines: gemini (default) or opus = Claude Opus 5.5 through OpenRouter "
-                             "(OPENROUTER_API_KEY, costs money; told the pictures are for FLUX.3 klein)")
+        ap.add_argument("--writer", choices=("gemini", "opus", "haiku", "sonnet"), default="gemini",
+                        help="who writes the lines: gemini (default); opus = Claude Opus 5.5 through OpenRouter "
+                             "(OPENROUTER_API_KEY, costs money; told the pictures are for FLUX.3 klein); haiku = "
+                             "Claude Haiku 5.5 through OpenCode Go (OPENCODE_API_KEY, the Go allowance; Qwen rules); "
+                             "sonnet = Claude Sonnet 5.5 through headless Claude Code (`claude -p`, your Claude "
+                             "subscription, effort medium; Qwen rules)")
     if sub == "up":
         ap.add_argument("--account", help="Kaggle profile (default: settings tts.kaggle_profile, then kaggle.account)")
         ap.add_argument("--tunnel", choices=("ngrok", "cloudflared"), default="ngrok")
@@ -61,6 +65,10 @@ def build_parser(sub: str) -> argparse.ArgumentParser:
                         help="the private Kaggle dataset (of --account) that holds the ngrok token, file "
                              "NGROK_AUTHTOKEN; default ngrok-token. For a second ngrok account: give its own --domain "
                              "(not remembered, the stored one is left alone); without one the address is not fixed")
+        ap.add_argument("--servers", type=int, choices=(1, 2),
+                        help="how many notebooks to start (default: settings images.servers); the second one (Qwen "
+                             "only) uses the Cloudflare tunnel images.cf_hostname_2 and joins the shared queue when "
+                             "it answers")
         ap.add_argument("--dry-run", action="store_true", help="stage everything and list it; call nothing")
         ap.add_argument("--no-wait", action="store_true", help="push the kernel and return without waiting for the server")
     if sub == "charsheet":

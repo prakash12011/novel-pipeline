@@ -42,6 +42,9 @@ from novel.gemini import contract as C
 from novel.gemini import importer as I
 from novel.gemini import prompt as P
 
+# Added to a translation request only when Gemini 4 Argon (the OpenCode Go fallback) answers it: tested 2026-11-18 on
+# chapter 1, Argon wrote 1,462 words where the band is about 720-1,080 (Hydrogen keeps to it without this line).
+FALLBACK_HINDI_NOTE = "LENGTH: keep the whole narration under 800 Hindi words."
 SLEEP = time.sleep                  # tests replace these two
 CLOCK = time.monotonic
 MAX_CONTINUATIONS = 4               # "continue from the last complete paragraph" rounds per translation
@@ -576,16 +579,23 @@ class Runner:
                         fallback_models=self.cfg.fallbacks, min_gap=self.cfg.min_gap, sleep=SLEEP, clock=CLOCK,
                         say=self.say)
 
-    def call(self, tag: str, step: str, system: str, user: str):
+    def call(self, tag: str, step: str, system: str, user: str, fallback_note: str = ""):
         """One API call: logged, saved, counted. -> (GenResult | None, request number). None: the reply was blocked
-        (a failed attempt, not a stop). Quota or a refusal stop the whole run (RunStop)."""
+        (a failed attempt, not a stop). Quota or a refusal stop the whole run (RunStop). `fallback_note` goes only to
+        the OpenCode Go fallback (Argon), not to Gemini."""
         from novel.stages import episode_translate as T
         self.check_stop()
         k, _ = self.log.request(tag, system, user)
         size = len(system) + len(user)
         self.say(f"{step}: request {k} ... {kb(size)} characters sent")
         try:
-            res = self.client.generate(system, user, temperature=0.3)
+            kw = {}
+            if isinstance(self.client, T.Gemini):     # the fallbacks' hints (a test's fake client takes none)
+                if fallback_note:
+                    kw["fallback_note"] = fallback_note
+                if tag.endswith("-images"):            # scene lines: Claude Sonnet is their first fallback
+                    kw["scenes"] = True
+            res = self.client.generate(system, user, temperature=0.3, **kw)
         except T.QuotaExhausted as e:
             self.fatal = f"the Gemini quota is used up: {e}"
             self.stop.set()
@@ -662,7 +672,7 @@ class Runner:
     def translate_call(self, ch: Ch, step: str, tag: str, system: str, user: str, first: str):
         """One translation attempt, with continuations while the reply is cut off by the output limit.
         -> (text or None, still_cut_off)."""
-        res, _ = self.call(tag, step, system, user)
+        res, _ = self.call(tag, step, system, user, fallback_note=FALLBACK_HINDI_NOTE)
         if res is None:
             return None, False
         ch.calls += 1
@@ -1062,7 +1072,7 @@ class Runner:
 
     # -------------------------------------------------------------- phases
 
-    def run_translations(self, chs: list[Ch]) -> None:
+    def run_translations(self, chs: list[Ch], recap: bool = True) -> None:
         for ch in chs:
             if not ch.need_translate or ch.status == "refused":
                 continue
@@ -1079,7 +1089,7 @@ class Runner:
                 return
             if ch.hindi == "written":
                 ch.need_translate = False
-        if any(c.hindi == "written" for c in chs):
+        if recap and any(c.hindi == "written" for c in chs):
             self.run_recap()
 
     def run_scenes(self, chs: list[Ch]) -> None:
@@ -1593,7 +1603,7 @@ class Runner:
                 return 1
         self.out(f"novel write: re-translate chapters {', '.join(str(n) for n in chapters)} of episode {self.ep} "
                  f"(model {self.cfg.model})")
-        any_failed = False
+        any_failed = wrote = False
         for n in chapters:
             had_hindi = self._has_hindi(n)
             old = self._set_aside(n) if had_hindi else None
@@ -1604,7 +1614,8 @@ class Runner:
             ch.need_translate = True
             ch.need_scenes = True
             try:
-                self.run_translations([ch])
+                self.run_translations([ch], recap=False)      # one recap after the loop, not one per chapter
+                wrote = wrote or ch.hindi == "written"
                 if ch.hindi == "written" and getattr(self.a, "no_scenes", False):
                     ch.status = "complete"                 # the picture lines are made elsewhere (novel ktrial)
                 elif ch.hindi == "written":
@@ -1642,6 +1653,8 @@ class Runner:
                     shutil.rmtree(old, ignore_errors=True)
                 self.out(f"chapter {n}: re-translate failed; the old version is back. Fix the problem and run again.")
                 any_failed = True
+        if wrote:
+            self.run_recap()
         self.out(f"Run log: {self.log.path}")
         return 1 if any_failed else 0
 

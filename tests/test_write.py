@@ -878,6 +878,23 @@ def test_retranslate_sets_aside_old_files_and_writes_new_hindi_and_scenes(book, 
     assert [r.kind for r in fake.requests[n_before:] if r.kind == "hindi"] == ["hindi"]
 
 
+def test_retranslating_two_chapters_makes_one_recap_at_the_end(book, capsys, fake):
+    assert write(capsys)[0] == 0
+    before = fake.count("recap")
+    hindi1_new_rule(fake)
+    assert write(capsys, "--retranslate", "1-2")[0] == 0
+    assert fake.count("recap") == before + 1
+
+
+def test_recap_dry_run_sends_nothing_and_keeps_the_old_recap(book3, capsys, fake):
+    assert write(capsys)[0] == 0
+    f = ep(book3) / "recap.txt"
+    old, before = f.read_text(encoding="utf-8"), fake.count("recap")
+    code, out = write(capsys, "--recap", "--dry-run")
+    assert code == 0 and "Dry run" in out
+    assert fake.count("recap") == before and f.read_text(encoding="utf-8") == old
+
+
 def test_restore_after_retranslate_brings_back_the_originals_byte_identical(book, capsys, fake):
     assert write(capsys)[0] == 0
     narrated_chapter(book, 1)
@@ -1145,7 +1162,7 @@ def test_the_narration_rules_carry_the_word_target_and_band_from_the_settings(tm
     words_book(tmp_path, monkeypatch)
     write(capsys, "--chapters", "3")
     system = next(r.system for r in fake.requests if r.kind == "hindi")
-    assert "a detailed recap of about 800 Hindi words (between 640 and 960 words)" in " ".join(system.split())
+    assert "at most 960 Hindi words (aim for about 800, and at least 640)" in " ".join(system.split())
     assert "move by move, in order" in system
     low = system.lower()
     assert "no word limit" not in low and "never drop information to make it shorter" not in low
@@ -1159,7 +1176,7 @@ def test_a_book_word_target_of_600_changes_the_band_in_the_rules(tmp_path, monke
     code, out = write(capsys, "--chapters", "3")
     assert code == 0, out
     system = next(r.system for r in fake.requests if r.kind == "hindi")
-    assert "about 600 Hindi words (between 480 and 720 words)" in " ".join(system.split())
+    assert "at most 720 Hindi words (aim for about 600, and at least 480)" in " ".join(system.split())
 
 
 def test_a_run_that_translates_makes_a_recap_of_the_episode_and_a_rerun_makes_no_call(book3, capsys, fake):

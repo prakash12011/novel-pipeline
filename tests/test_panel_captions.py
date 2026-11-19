@@ -155,11 +155,14 @@ def test_lead_offsets_narration_time():
 
 
 def test_para_zero_and_empty_text_skipped():
+    """Paragraph 0 is skipped only when it is a spoken heading (its Hindi is one); in a new chapter it is story."""
     pl = plan([0.0, 20.0])
-    ln = [line(0, "Chapter One", 0.0, 2.0), line(1, "", 2.0, 4.0), line(1, "   ", 4.0, 6.0),
+    ln = [{**line(0, "Chapter One", 0.0, 2.0), "hi": "अध्याय 1: शुरुआत"}, line(1, "", 2.0, 4.0), line(1, "   ", 4.0, 6.0),
           line(1, "Real text here", 6.0, 9.0)]
     got = C.cues(ln, pl, measure, lead=0.0, title_end=0.0)
     assert [c["text"] for c in got] == ["Real text here"]
+    story = C.cues([line(0, "First story line", 0.0, 2.0)], pl, measure, lead=0.0, title_end=0.0)
+    assert [c["text"] for c in story] == ["First story line"]
 
 
 def test_title_end_clips_and_min_seconds_drops():

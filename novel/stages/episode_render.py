@@ -357,7 +357,9 @@ def panel_cues(ep_root: Path, n: int, pl: dict, title: dict, images: list | None
     from . import panel_lettering as PL
     from . import episode_panels as P
     C.ensure(ep_root, n)
-    cues = PC.cues(C.timed_lines(ep_root, n), pl, PL.measure, lead=LEAD, title_end=title["dur"])
+    # title_end=0: no spoken chapter heading any more, so a caption starts with its narration (it was held back
+    # until the title card ended, which put the first captions late). Was: title_end=title["dur"].
+    cues = PC.cues(C.timed_lines(ep_root, n), pl, PL.measure, lead=LEAD, title_end=0.0)
     for c in cues:                                     # they stay on their panel, stacked: none fades out
         c["fade_out"] = False
     return P.place_captions(pl, cues, images)

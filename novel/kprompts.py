@@ -51,14 +51,19 @@ REF_LABEL = "<ref_image_{n}>"
 
 # v2 shot names (S.SHOTS_V2) -> one short instruction each. Close framing: this model draws what it is told, so the
 # shot text says how much of the person is in the frame (Flow needed the opposite, see prompts.SHOT_TEXT).
+# The camera a little closer on the far shots: small, far-away people got distorted faces (chapter 6 s41, a high-angle
+# shot Qwen drew full length and small). "wide" said "people small" outright.
 KSHOT_TEXT = {
-    "wide": "wide view of the place, people small and full length",
+    # full length, but the whole body filling the frame: "about half the picture height" still left faces small (c8 s59);
+    # the user wants full figures, not a crop at the knees
+    "wide": "wide view with the place around them, the people full length, filling the frame from head to feet, "
+            "faces clear",
     "establishing": "establishing view of the whole place, no person in focus",
     "medium": "medium shot from the waist up, the person in front, with the place and the people around them visible "
               "behind",
     "over-the-shoulder": "over-the-shoulder shot, both people from the chest up, one seen from behind",
-    "low-angle": "low camera looking up, from the knees up",
-    "high-angle": "high camera looking down, from the knees up",
+    "low-angle": "low camera looking up, the people full length, filling the frame from head to feet, faces clear",
+    "high-angle": "high camera looking down, the people full length, filling the frame from head to feet, faces clear",
     "detail": "close view of the object alone, filling most of the frame, no people and no hands",
 }
 assert tuple(KSHOT_TEXT) == S.SHOTS_V2
@@ -83,7 +88,15 @@ CLOTHES = re.compile(r",?\s+wearing\b.*$", re.S)     # shortcut: finds only a lo
 # stand, who, which reference, how they look, pose, face - and two or more people are named as different kinds of
 # person ("the strapping eighteen-year-old lad" / "the thin, skinny middle-aged village farmer").
 NUMBER = {2: "TWO", 3: "THREE", 4: "FOUR"}
-CLOSING_EMPTY = "Nobody in the picture. No text, speech bubbles, captions or borders." + NO_WRITING
+# Nobody in the picture: said firmly (a "detail" shot of bare ground got an invented woman with a lamp, chapter 6 s11)
+CLOSING_EMPTY = ("Nobody in the picture: no person, no figure, no face and no silhouette anywhere, not even small in the "
+                 "distance. No text, speech bubbles, captions or borders." + NO_WRITING)
+# The references are front views (one person standing straight, facing the viewer): Qwen copied that pose, so people
+# stood side by side facing the camera like a line-up instead of acting the scene (chapter 6 s41).
+REF_POSE = ("The reference pictures show each person standing straight and facing the viewer: take only their face, "
+            "hair, body and clothes from them, never that stance or that calm face.")
+TWO_ACT = ("They are in the middle of the moment: bodies and faces turned toward each other as the scene says, not "
+           "standing side by side posing for the camera.")
 PLATE_CLOSING = "Wide view of the whole place, empty: nobody in the picture. No text, captions or borders."
 
 
@@ -125,22 +138,116 @@ def _clip(text) -> str:
     return _one(text).rstrip(" .;,")
 
 
-def _person_line(m: dict, number: int | None) -> str:
-    """One person as one block: [WHERE: Name (<ref>) - look; pose; hands; wearing; face]."""
+SIDE = re.compile(r"\b(?:far|center|centre|middle)?-?\s*(?:left|right)\b(?:\s+(?:side|edge|of the frame))?", re.I)
+
+
+def _unname(text: str, members: list[dict], me: dict | None = None) -> str:
+    """Another person of the picture by role, never by name: a name in someone else's line (or in the scene) pulled in
+    that person's reference again, and Qwen drew them twice (chapter 1 s60: a second Maurice doing Ryan's gesture)."""
+    for m in members:
+        if m is me or not _kind(m):
+            continue
+        role = f"the {_kind(m)}"
+        names = [m["display"]] + [w for w in m["display"].split()[:1] if len(w) > 2 and sum(
+            w in o["display"].split() for o in members) == 1]   # also the first name, when only this person has it
+        for n in names:
+            text = re.sub(rf"\b{re.escape(n)}\b(?:'s)?", lambda x: role + ("'s" if x.group(0).endswith("'s") else ""),
+                          text)
+    return text
+
+
+ARTICLES = {"the", "a", "an"}
+LYING = re.compile(r"\b(?:lying|lies|prone|fallen|sprawled|on the (?:ground|floor|mud)|on (?:its|his|her) back)\b", re.I)
+
+
+def _offstage(text: str, bible: dict, members: list[dict]) -> str:
+    """A bible person named in the scene but not in the picture becomes "someone out of view": the name alone made
+    Qwen draw them as an extra person (s54: "Lumian Lee waits" in a picture of Ryan and Maurice)."""
+    cast = {m["key"] for m in members}
+    chars = bible.get("characters") or {}
+    firsts = [c["display"].split()[0] for c in chars.values() if c.get("display")]
+    for key, c in chars.items():
+        name = c.get("display") or ""
+        if key in cast or not name:
+            continue
+        first = name.split()[0]
+        # never the first word "The" of "The Owl": every sentence starting with "The" became "Someone out of view ..."
+        # (~15% of the prompts of EP1-EP2 had it)
+        alias = len(first) > 2 and firsts.count(first) == 1 and first.lower() not in ARTICLES
+        for n in [name] + ([first] if alias else []):
+            text = re.sub(rf"\b{re.escape(n)}\b(?:'s)?", "someone out of view", text)
+    return text
+
+
+def _back_person(scene: dict, members: list[dict]) -> dict | None:
+    """In a two-person over-the-shoulder shot, whose back is in the foreground: the one the action sees "past", "over"
+    or "behind" (only "past" was read once: c6 s44 made the wrong one the back). None, and the shot is drawn as a plain
+    two-person shot, when the action names no shoulder, or when that person also acts in it: guessing the first of the
+    cast drew Lumian as the back AND taking a magazine off the shelf (c9 s05)."""
+    action = _one(scene.get("action") or scene.get("scene"))
+    m = re.search(r"\b(?:past|over|behind)\s+(.{0,60}?)'s\s+shoulder", action, re.I)
+    if not m:
+        return None
+    rest = action[:m.start()] + action[m.end():]
+    for p in members:
+        names = [n for n in (p["display"], p["display"].split()[0]) if n]
+        if any(n in m.group(1) for n in names):
+            return None if any(re.search(rf"\b{re.escape(n)}\b", rest) for n in names) else p
+    return None
+
+
+SIDE_PHRASE = re.compile(r",?\s*\b(?:on|to|at|from|in|toward|towards)\s+the\s+(?:far\s+|lower\s+|upper\s+)?"
+                         r"(?:left|right)(?:-hand)?(?:\s+(?:foreground|background|side|edge|of the frame))?\b", re.I)
+
+
+def _no_side_words(text: str) -> str:
+    """The scene without "on the left" and the like (no place picture: the person's own block says where they are)."""
+    return re.sub(r"\s+([.,;])", r"\1", SIDE_PHRASE.sub("", text)).strip()
+
+
+def _capitals(text: str) -> str:
+    """A sentence that now starts with "the ..." (a name replaced by a role) gets its capital back."""
+    return re.sub(r"(^|[.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), text)
+
+
+def _no_sides(where: str) -> str:
+    """The spot without left/right: with no place picture Qwen lays the room out itself, and 'far left, behind the
+    bar' with the bar drawn on the right made it draw the person at both (s60)."""
+    kept = [p.strip() for p in where.split(",") if p.strip() and not SIDE.search(p)]
+    if kept:
+        return ", ".join(kept)
+    return " ".join(SIDE.sub(" ", where).split()).strip(" ,")
+
+
+def _person_line(m: dict, number: int | None, members: list[dict] | None = None, sides: bool = True,
+                 back: bool = False) -> str:
+    """One person as one block: [WHERE: Name (<ref>) - look; pose; hands; wearing; face]. The others of the picture
+    are named by role in it (`members`); `sides` False drops left/right from the position; `back`: this person is the
+    over-the-shoulder back in the foreground (no face, no hands to show)."""
+    me = m                                      # the member itself: its own name stays in its own line
+    if back:
+        # no pose either: "standing in the doorway" put the back-view person in a second place as well (c6 s44)
+        c = dict(m["cast"], position="near foreground, seen from behind: only the back of the head and one shoulder",
+                 pose="", mood="", hands="")
+        m = dict(m, cast=c)
     c = m["cast"]
+    others = members or []
+    fix = lambda t: _unname(_clip(t), others, me) if len(others) > 1 else _clip(t)     # noqa: E731
     who = m["display"] if number is None else f"{m['display']} ({_ref(number)})"
     look = _one(m["look"])
     if number is not None:
         look = CLOTHES.sub("", look)
-    bits = [b for b in (_clip(look), _clip(c.get("pose"))) if b]
-    hands = _clip(c.get("hands"))
+    bits = [b for b in (_clip(look), fix(c.get("pose"))) if b]
+    hands = fix(c.get("hands"))
     if hands and not hands.lower().startswith("empty"):   # empty hands are left out: naming them pulls them into view
         bits.append(f"hands: {hands}")
     if _clip(c.get("wearing")):
         bits.append(f"wearing {_clip(c.get('wearing'))}")
-    if _clip(c.get("mood")):
-        bits.append(f"face: {_clip(c.get('mood'))}")
-    where = _clip(c.get("position"))
+    if fix(c.get("mood")):
+        bits.append(f"face: {fix(c.get('mood'))}")
+    where = fix(c.get("position"))
+    if not sides:
+        where = _no_sides(where)
     return f"[{where.upper() + ': ' if where else ''}{who}" + (" - " + "; ".join(bits) if bits else "") + "]"
 
 
@@ -188,7 +295,10 @@ def klein_prompt(scene: dict, doc: dict, chapter: int, bible: dict, locations: d
         refs.append({"role": "place", "group": gid})
         plate_no = len(refs) - 1
 
-    parts = [_style(bible)]
+    style = _style(bible)
+    if not members:                             # no anime eyes asked for in a picture with nobody in it (c6 s11)
+        style = style.replace(", expressive anime eyes", "").replace("expressive anime eyes, ", "")
+    parts = [style]
     if plate:                                   # the people's references are named in their own blocks
         parts.append(f"{_ref(plate_no)} is the place.")
 
@@ -204,22 +314,57 @@ def klein_prompt(scene: dict, doc: dict, chapter: int, bible: dict, locations: d
             place.append(_sentence(block))
     parts.append(" ".join(place))
 
-    lines = [_person_line(m, number.get((m["key"], m["var"])) if m["flow_name"] else None) for m in members]
+    back = _back_person(scene, members) if shot == "over-the-shoulder" and len(members) == 2 else None
+    lines = [_person_line(m, number.get((m["key"], m["var"])) if m["flow_name"] else None, members, sides=plate,
+                          back=m is back)
+             for m in members]
     if members:
         lines.insert(0, _people_head(members))
+        if number:                              # someone has a front-view reference: never copy its stance
+            lines.append(REF_POSE)
+        if len(members) > 1 and back is None:   # (an over-the-shoulder shot already sets how the two stand)
+            lines.append(TWO_ACT)
     others = _clip(scene.get("others"))
     if others and not no_others(scene.get("others")):
-        lines.append(f"In the background, smaller and plainly different from them: {others}.")
+        if len(members) > 1:
+            others = _unname(others, members)
+        # a group ("five thugs in vests") with no faces of its own got the named person's face and clothes: five
+        # copies of Pons behind Pons (c8 s32)
+        named = " or ".join(f"the {_kind(m)}" for m in members if _kind(m)) or "the named people"
+        lines.append(f"In the background, smaller and plainly different from them: {others}. Each of them with a "
+                     f"face, age, build, hair and clothes of their own, unlike {named} and unlike each other.")
     if lines:
         parts.append("\n".join(lines))
 
-    # An over-the-shoulder shot of ONE person made the model invent a second copy of them, seen from behind.
-    shot_text = KSHOT_TEXT["medium" if shot == "over-the-shoulder" and len(members) < 2 else shot]
+    # An over-the-shoulder shot of ONE person made the model invent a second copy of them, seen from behind; with two
+    # and no clear back (see _back_person) it is drawn as a plain two-person shot.
+    shot_text = KSHOT_TEXT["medium" if shot == "over-the-shoulder" and (len(members) < 2 or back is None) else shot]
     if shot == "detail" and members:
         # A hand close-up plus an attached portrait made the model draw a giant extra hand in front of the person.
         shot_text = DETAIL_WITH_PERSON
+    elif len(members) == 1 and not (others and not no_others(scene.get("others"))):
+        # "the people (around them)" with ONE named person and no extras made the model draw a second copy of them
+        # (c13 s15, c14 s45): singular wording when nobody else is in the picture.
+        shot_text = (shot_text.replace("the place and the people around them visible behind", "the place visible behind them")
+                     .replace("the people full length", "the person full length"))
+    if back is not None:
+        # "one seen from behind" without saying who: Qwen drew that person's back AND the same person facing the camera
+        # (chapter 3 s18, s29). The back is one of the two, named by role, never a third figure.
+        front = next(m for m in members if m is not back)
+        # a person lying on the ground "faces the camera, from the chest up" came out standing, beside a second copy
+        # lying down (c13 s48)
+        seen = ("lies on the ground beyond them, as described above, drawn once" if LYING.search(
+            f"{front['cast'].get('pose') or ''} {front['cast'].get('position') or ''}") else
+            "faces the camera, from the chest up")
+        shot_text = (f"over-the-shoulder shot: the near foreground is the back of the {_kind(back)} (back of the head "
+                     f"and one shoulder only, not drawn a second time facing the camera); the {_kind(front)} {seen}")
     parts.append(f"SHOT: {shot_text}.")
-    parts.append(f"SCENE: {_one(scene.get('action') or scene.get('scene'))}")
+    action = _offstage(_one(scene.get("action") or scene.get("scene")), bible, members)
+    if len(members) > 1:                        # the cast's names stay in their own blocks
+        action = _unname(action, members)
+    if not plate:                               # "on the left" in the scene against the person's own spot (s31)
+        action = _no_side_words(action)
+    parts.append(f"SCENE: {_capitals(action)}")
     parts.append(CLOSING if members else CLOSING_EMPTY)
     return {"text": "\n\n".join(parts) + "\n", "refs": refs, "seed": seed_for(chapter, f"s{sid:02d}")}
 

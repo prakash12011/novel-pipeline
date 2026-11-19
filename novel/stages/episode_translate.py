@@ -309,6 +309,72 @@ class Gemini:
             self.usage["output"] += int(u.get("candidatesTokenCount") or 0)
         return r
 
+    def _opencode(self, system: str, text: str, temperature: float, max_output_tokens: int | None, why: str,
+                  note: str = "") -> GenResult | None:
+        """The first fallback: gemini.opencode_fallback (Gemini 4 Argon) through OpenCode Go, on the Go plan's allowance.
+        `note` is added to the request for this model only (Argon writes long: the translation's length line). None when
+        it is off, there is no key, or it fails (then OpenRouter is next); a used-up allowance turns it off for this
+        client."""
+        from novel import kqa
+        from novel.core import settings
+        model = settings.get("gemini.opencode_fallback", default=None)
+        if not model or getattr(self, "_opencode_off", False):
+            return None
+        try:
+            chat = kqa.OpenCodeChat(model)
+        except kqa.QAError:
+            return None
+        self.say(f"    {why}; asking OpenCode Go ({model})")
+        try:
+            r = chat.generate(system, text + (f"\n\n{note}" if note else ""), temperature=temperature,
+                              max_output_tokens=max_output_tokens or 32000)
+        except Exception as e:                                   # noqa: BLE001 - any failure: OpenRouter is next
+            code = getattr(e, "code", None)
+            if code in kqa.LIMIT_STATUS:
+                self._opencode_off = True
+            self.note(event="opencode_error", model=model, code=code, error=str(e)[:200])
+            self.say(f"    OpenCode Go failed: {str(e)[:120]}")
+            return None
+        u = r.usage or {}
+        self.note(event="opencode", model=model, allowance=u.get("allowance"))
+        with self._lock:
+            self.calls += 1
+            self.usage["prompt"] += int(u.get("promptTokenCount") or 0)
+            self.usage["output"] += int(u.get("candidatesTokenCount") or 0)
+        return r
+
+    def _claude(self, system: str, text: str, max_output_tokens: int | None, why: str) -> GenResult | None:
+        """Scene lines only: gemini.scene_claude (Claude Sonnet) through headless Claude Code on the user's
+        subscription. None when it is off or fails (the next writer takes over); a failure turns it off for this
+        client."""
+        from novel import kclaude
+        from novel.core import settings
+        model = settings.get("gemini.scene_claude", default=None)
+        if not model or getattr(self, "_claude_off", False):
+            return None
+        self.say(f"    {why}; asking Claude ({model}, headless Claude Code)")
+        try:
+            r = kclaude.ClaudeHeadless(model).generate(system, text, max_output_tokens=max_output_tokens or 32000)
+        except Exception as e:                                   # noqa: BLE001 - any failure: the next fallback
+            self._claude_off = True
+            self.note(event="claude_error", model=model, error=str(e)[:200])
+            self.say(f"    Claude failed: {str(e)[:120]}")
+            return None
+        u = r.usage or {}
+        self.note(event="claude", model=r.model, api_equivalent=u.get("cost"))
+        with self._lock:
+            self.calls += 1
+            self.usage["prompt"] += int(u.get("promptTokenCount") or 0)
+            self.usage["output"] += int(u.get("candidatesTokenCount") or 0)
+        return r
+
+    def _fallback(self, system: str, text: str, temperature: float, max_output_tokens: int | None, why: str,
+                  note: str = "", scenes: bool = False) -> GenResult | None:
+        """Scene lines: Claude Sonnet (subscription) first. Then Argon on OpenCode Go, then OpenRouter."""
+        return ((self._claude(system, text, max_output_tokens, why) if scenes else None)
+                or self._opencode(system, text, temperature, max_output_tokens, why, note)
+                or self._router(system, text, temperature, max_output_tokens, why))
+
     def _pace(self) -> None:
         """Keep `min_gap` seconds between the start of two requests (the slot is reserved under a lock, so
         requests from several threads queue up)."""
@@ -322,7 +388,10 @@ class Gemini:
             self.sleep(slot - now)
 
     def generate(self, system: str, text: str, *, json_out: bool = False, temperature: float = 0.4,
-                 max_output_tokens: int | None = None) -> GenResult:
+                 max_output_tokens: int | None = None, fallback_note: str = "", scenes: bool = False) -> GenResult:
+        """`fallback_note`: a line added only when the OpenCode Go fallback answers (Argon writes long translations).
+        `scenes`: a scene-line request: with gemini.scene_writer `claude` Claude Sonnet (gemini.scene_claude) writes it
+        first; it is also the first fallback after the free keys."""
         body = {"system_instruction": {"parts": [{"text": system}]},
                 "contents": [{"role": "user", "parts": [{"text": text}]}],
                 "generationConfig": {"temperature": temperature}}
@@ -330,6 +399,12 @@ class Gemini:
             body["generationConfig"]["responseMimeType"] = "application/json"
         if max_output_tokens:
             body["generationConfig"]["maxOutputTokens"] = max_output_tokens
+        if scenes:                                  # the main scene writer (gemini.scene_writer), before the free keys
+            from novel.core import settings
+            if str(settings.get("gemini.scene_writer", default="gemini")).lower() == "claude":
+                r = self._claude(system, text, max_output_tokens, "the scene lines are written by Claude")
+                if r is not None:
+                    return r
         if force_openrouter():
             r = self._router(system, text, temperature, max_output_tokens, "OpenRouter is forced")
             if r is None:
@@ -347,12 +422,12 @@ class Gemini:
                     if mi + 1 < len(models):
                         mi += 1
                         continue
-                    r = self._router(system, text, temperature, max_output_tokens,
-                                     "every Gemini key has used its free calls for today")
+                    r = self._fallback(system, text, temperature, max_output_tokens,
+                                       "every Gemini key has used its free calls for today", fallback_note, scenes)
                     if r is not None:
                         return r
                     raise QuotaExhausted("every Gemini key has used its free calls for today (gemini.free_tier) and "
-                                         "OpenRouter did not answer; the count resets at midnight Pacific")
+                                         "neither OpenCode Go nor OpenRouter answered; the count resets at midnight Pacific")
                 if isinstance(pick, float):
                     self.say(f"    free tier: every key used its {budget.per_minute} calls this minute, "
                              f"waiting {pick:.0f}s")
@@ -373,16 +448,16 @@ class Gemini:
                     raise Refused(f"Gemini refused with HTTP {code}: {e} - "
                                   f"this won't fix itself, stopping")
                 if code == 429 and budget is not None:     # out of step with Google's count: hold the key
-                    try:
-                        body = e.read().decode("utf-8", "replace")
+                    try:                                    # (not `body`: that is the request, sent again next)
+                        reason = e.read().decode("utf-8", "replace")
                     except Exception:
-                        body = ""
-                    budget.limited(key, whole_day="PerDay" in body)
+                        reason = ""
+                    budget.limited(key, whole_day="PerDay" in reason)
                     hits += 1
                     with self._lock:
                         self.rate_switches += 1
                     self.say(f"    rate limit: key {key + 1} on {model}"
-                             + (" (daily quota gone)" if "PerDay" in body else " (held for a minute)"))
+                             + (" (daily quota gone)" if "PerDay" in reason else " (held for a minute)"))
                     continue
                 if code == 429:
                     limited += 1
@@ -399,8 +474,8 @@ class Gemini:
                             self._sticky = (mi, self.clock() + self.key_wait_s)
                             self.say(f"    every key is limited on {model}; trying the fallback model {models[mi]}")
                             continue
-                        r = self._router(system, text, temperature, max_output_tokens,
-                                         "every Gemini key is rate-limited")
+                        r = self._fallback(system, text, temperature, max_output_tokens,
+                                           "every Gemini key is rate-limited", fallback_note, scenes)
                         if r is not None:
                             return r
                         waits += 1
@@ -415,8 +490,8 @@ class Gemini:
                 else:
                     drops += 1
                     if drops % 3 == 0:
-                        r = self._router(system, text, temperature, max_output_tokens,
-                                         f"the Gemini request failed {drops} times ({str(e)[:60]})")
+                        r = self._fallback(system, text, temperature, max_output_tokens,
+                                           f"the Gemini request failed {drops} times ({str(e)[:60]})", fallback_note, scenes)
                         if r is not None:
                             return r
                     self.sleep(min(60, 5 * attempt))

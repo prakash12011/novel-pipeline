@@ -24,7 +24,8 @@ FACE_API = """You describe the faces of characters of the web novel "Circle of I
 for an anime image model that draws every face alike unless told exactly how each one differs.
 
 For each character of the list return:
-- "face": 25-45 words, concrete and visual only: face shape, cheekbones and jaw, nose, brows, eye shape, lips, skin, \
+- "face": 25-45 words, concrete and visual only. Start with who it is, sex and age as the novel says ("A woman in \
+her early fifties: ...", "A boy of about twelve: ..."); then face shape, cheekbones and jaw, nose, brows, eye shape, lips, skin, \
 build and height, age marks, and one feature that sets this person apart. Make every face clearly unlike the others in \
 the list (vary face shape, nose, brows, build and age). Follow the novel where it says something; invent the rest. For a \
 creature, its head and body.
@@ -160,6 +161,7 @@ def add_faces(book: str, keys: list[str], say=print) -> int:
 
 def cmd_front(args, trial: Path) -> int:
     from . import ktrial_run as R
+    from .kpool import Pool
     bdir = B.bible_dir(args.book)
     out_dir = bdir / "qwen" / FRONT_DIR
     chars = B.load_characters(bdir)["characters"]
@@ -174,24 +176,38 @@ def cmd_front(args, trial: Path) -> int:
     if add_faces(args.book, keys):
         print("some characters have no face line (see above): they are drawn from their look alone")
     bible = B.load_characters(bdir)
-    server = R.answering(R.load_server(trial))
-    if server is None or server.get("model") != kcomfy.QWEN:
+    servers = [a for x in R.load_servers(trial) if x.get("model") == kcomfy.QWEN and (a := R.answering(x))]
+    if not servers:
         print("no Qwen server answers for this chapter: run `novel ktrial up --model qwen-image-turbo` first")
         return 1
-    run = R._Run(R._comfy(server), out_dir, {"width": WIDTH, "height": HEIGHT, "chapter": 0}, kcomfy.QWEN)
-    run.root = out_dir
     todo = [k for k in keys if args.redo or not R._valid_jpeg(out_dir / f"{k}_front.jpg")]
-    run.total = len(todo)
+    runs = []
+    for x in servers:                                               # one run per server, one queue for the characters
+        r = R._Run(R._comfy(x), out_dir, {"width": WIDTH, "height": HEIGHT, "chapter": 0}, kcomfy.QWEN)
+        r.root, r.n, r.total, r.group = out_dir, x["n"], len(todo), runs
+        runs.append(r)
     stamp = R._stamp()
+    pool = Pool(runs)
+
+    def job(k):
+        def draw(r):
+            meta = r.make("front", k, {"out": f"{k}_front.jpg"}, front_prompt(bible, k), seed_of(k), [],
+                          stamp if args.redo else None)
+            r.progress(k, meta)
+        return draw
+
+    def failed(k):
+        def done(fut):
+            if fut.exception() is not None:
+                with R._COUNT_LOCK:
+                    runs[0].failed += 1
+                print(f"  {k}: failed: {fut.exception()}")
+        return done
+
     for k in todo:
-        try:
-            meta = run.make("front", k, {"out": f"{k}_front.jpg"}, front_prompt(bible, k), seed_of(k), [],
-                            stamp if args.redo else None)
-            run.progress(k, meta)
-        except kcomfy.ComfyError as e:
-            run.failed += 1
-            print(f"  {k}: failed: {e}")
-    run.summary()
+        pool.add(k, job(k)).add_done_callback(failed(k))
+    pool.finish()
+    runs[0].summary()
     print("check them by eye (no picture QA here: character pictures are chosen by hand); "
           "`--keys a,b --redo` draws chosen ones again")
-    return 1 if run.failed else 0
+    return 1 if sum(r.failed for r in runs) else 0

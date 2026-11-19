@@ -292,8 +292,10 @@ HINDI_KIND = "  HINDI c{ex4}     -> inbox/c{ex4}.hindi.txt      (4-digit chapter
 HINDI_PLAIN = " The HINDI block is plain text, not in a code fence."
 
 PART_A_FULL_TEXT = """PART A - THE NARRATION (HINDI block)
-- Retell the chapter as a Hinglish narration for friends and family. Write the narration as a detailed recap of about
-  {target} Hindi words (between {low} and {high} words). Leave out character descriptions (looks, clothes, background
+- Retell the chapter as a Hinglish narration for friends and family, as a detailed recap. THE LENGTH IS A HARD LIMIT:
+  the whole narration has at most {high} Hindi words (aim for about {target}, and at least {low}). A narration over
+  {high} words is rejected and has to be written again, so count as you go and stop adding detail before you reach
+  {high}. Leave out character descriptions (looks, clothes, background
   about who someone is) and other side information that does not move the story; keep every plot event, decision,
   reveal, clue and line of dialogue that matters. Action scenes stay detailed: tell them move by move, in order. Add
   nothing that is not in the chapter.
@@ -354,8 +356,11 @@ Rules:
   cave, tent or vehicle, and "outdoor" when it stands in the open (street, yard, field, roof, shore). Decide it for
   each group from the narration of that moment, NOT from the location's kind: one location can have both an inside and
   an outside (a house and its yard). A doorway or a window view is whichever side the camera stands on. "time" says
-  when it happens. "light" must agree with both: no sunlight at night; no moon or stars indoors unless a window is
-  mentioned; by day outdoors the light is the sky, not lamps.
+  when it happens: decide day or night from the narration for every group (a morning at home is "day" even right after
+  a night scene). "light" must agree with both: no sunlight at night; no moon or stars indoors unless a window is
+  mentioned; by day outdoors the light is the sky, not lamps. A dream place has its own light, whatever the time
+  in the waking world (for example a sky of thick white fog with no sun, dim as a starlit night): write "night" there
+  and the light the novel gives that place.
 - "present" (group): EVERY named character who is in this place during the group, by key, listed first. It is required
   and not empty, unless the group truly has nobody (an empty street): then it is [] and every image of the group has
   an empty cast.
@@ -753,7 +758,10 @@ QWEN_NOTE = (
     "many and how they react, e.g. \"four farmers at the tables leaning in, one laughing, one frowning\"; leave it "
     "empty only when the person is truly alone. Give every extra person a look of their own that differs from the "
     "named people (age, build, hair, clothes), e.g. \"a bald, heavy-set mover in a grey apron\"; the image model "
-    "otherwise draws them with a named person's face. "
+    "otherwise draws them with a named person's face. A group is no exception: never \"five thugs in vests\", but how "
+    "they differ, e.g. \"five thugs: a bald old brute, a lanky red-haired youth, a short bearded man in a cap, two "
+    "stocky brothers in patched jackets\", and never in the named person's own clothes (a group described only as a "
+    "group came out as five copies of the man they followed). "
     "Each picture shows what ITS OWN window narrates. When a window narrates what a person TELLS (a memory, a past "
     "job, a rumour: \"I did X, then Y happened\"), draw that told event itself, with the teller acting it out inside "
     "the told place, not the room where it is told; give each told place its own group using the matching place of "
@@ -764,4 +772,9 @@ QWEN_NOTE = (
     "\"action\": name the spot inside the place, and one thing in the foreground or background that makes this "
     "picture different from the previous one. \"action\" and \"others\" never name a person of the bible who is not "
     "in the cast: someone who must be seen is in the cast, everyone else is left out of the words (the image model "
-    "draws a named person it has no reference for with a cast member's face).")
+    "draws a named person it has no reference for with a cast member's face). "
+    "More people: this series shows the people a window involves, not the fewest. Whenever a window names or involves "
+    "two or more people (a conversation, an argument, a group walking, a meeting, the reaction of those present), put "
+    "ALL of them in the cast, up to the maximum, each with their own position (left, centre, right, in front, behind); "
+    "this overrides any 'fewer people is better' rule above. Use a single person only when the window is truly about "
+    "one person alone. Aim for at least half of the pictures to show two or more named people.")

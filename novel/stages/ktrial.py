@@ -42,8 +42,9 @@ from novel.stages import episode_scenes as S
 
 WIDTH, HEIGHT = 1376, 768          # 1K pictures: the FHD panels video only uses cutouts
 FRAMING = "wide"                   # the Flow-era rules: audiences and varied shots ("tight" gave one room, one face)
-DEFAULT_MAX_CHARACTERS = 2
+DEFAULT_MAX_CHARACTERS = 4
 OPUS_MODEL = "anthropic/claude-opus-5.5"      # OpenRouter id of claude-opus-5-5
+HAIKU_MODEL = "claude-haiku-5-5"               # OpenCode Go id (`--writer haiku`, on the Go allowance)
 REF_JPEG_QUALITY = 92
 assert WIDTH % kcomfy.SIZE_STEP == 0 and HEIGHT % kcomfy.SIZE_STEP == 0
 
@@ -93,9 +94,13 @@ def extra_locations(trial: Path) -> dict:
 
 
 def qwen_sheet(work: Path, key: str) -> Path | None:
-    """The Qwen character sheet of `key` under <book>/_work/ktrial (c*/qwen-image-turbo/charsheet/<key>_sheet_seed*.jpg),
-    seed 202 first, then the newest; None when there is none."""
+    """The Qwen reference of `key`: its approved front view (<book>/bible/qwen/front/<key>_front.jpg, one detailed
+    figure: the multi-view sheets showed five small copies of a person), else its character sheet (bible/qwen, then
+    _work/ktrial c*/qwen-image-turbo/charsheet/<key>_sheet_seed*.jpg), seed 202 first, then the newest; else None."""
     sheets = Path(work).parent.parent / "bible" / "qwen"          # <book>/bible/qwen: where sheets live now
+    front = sheets / "front" / f"{key}_front.jpg"
+    if front.is_file():
+        return front
     found = sorted([*sheets.glob(f"{key}_sheet_seed*.jpg"), *work.glob(f"c*/qwen-image-turbo/charsheet/{key}_sheet_seed*.jpg")],
                    key=lambda p: ("qwen-image-turbo" in p.parts, "seed202" not in p.name, -p.stat().st_mtime))
     return found[0] if found else None
@@ -204,6 +209,8 @@ def _call(client, folder: Path, step: str, system: str, user: str, out=print):
         raise TrialError(f"Gemini stopped the run: {e.code}")
     except korouter.RouterError as e:
         raise TrialError(f"OpenRouter stopped the run: {e}")
+    except (RuntimeError, OSError) as e:                      # the OpenCode writer (kqa.QAError, an HTTP error)
+        raise TrialError(f"the writer stopped the run: {str(e)[:300]}")
     except ValueError as e:
         out(f"{step}: blocked: {e}")
         return None
@@ -351,16 +358,30 @@ def _scenes(args, client) -> int:
                            window_count=count, framing=FRAMING)
     base = W.images_instruction(chapter, count, batch) + TRIAL_NOTE
     gem = trial / "gemini"
-    opus = getattr(args, "writer", "gemini") == "opus"
+    writer = getattr(args, "writer", "gemini")
+    opus = writer == "opus"
+    model = cfg.model
     if opus:
         base += KLEIN_NOTE
         gem = trial / "opus"
+        model = OPUS_MODEL
         client = client or korouter.Chat(korouter.find_key(), OPUS_MODEL)
+    elif writer == "sonnet":                           # the same rules, Claude Sonnet via headless Claude Code
+        from novel import kclaude
+        base += QWEN_NOTE
+        gem = trial / "sonnet"
+        model = f"{kclaude.MODEL} (Claude Code, effort {kclaude.EFFORT})"
+        client = client or kclaude.ClaudeHeadless()
+    elif writer == "haiku":                            # the same rules as Gemini, written by Claude Haiku (OpenCode Go)
+        from novel import kqa
+        base += QWEN_NOTE
+        gem = trial / "haiku"
+        model = HAIKU_MODEL
+        client = client or kqa.OpenCodeChat(HAIKU_MODEL)
     else:
         base += QWEN_NOTE
         client = client or make_client(cfg, gem)
-    print(f"chapter {chapter}: {count} windows; {FRAMING} rules, at most {max_people} named people; "
-          f"model {OPUS_MODEL if opus else cfg.model}")
+    print(f"chapter {chapter}: {count} windows; {FRAMING} rules, at most {max_people} named people; model {model}")
 
     feedback = None                                    # (what the tool said, the rejected answer)
     for attempt in range(1, cfg.attempts + 1):
@@ -442,6 +463,9 @@ def _prompts(args) -> int:
     # only, a sheet has no variants. Otherwise the central square of the Flow portrait.
     flow = bdir / "flow"
     sheets = {kv: qwen_sheet(trial.parent, kv[0]) if kv[1] in (None, "", "base") else None for kv in people}
+    for kv in people:       # a variant with no Flow portrait (none are made since Qwen): the person's own front view,
+        if not sheets[kv] and not (flow / f"{ref_stem(*kv)}-portrait.jpg").exists():   # the words carry the change
+            sheets[kv] = qwen_sheet(trial.parent, kv[0])
     sources = {kv: sheets[kv] or flow / f"{ref_stem(*kv)}-portrait.jpg" for kv in people}
     missing = [str(f) for f in sources.values() if not f.exists()]
     if missing:

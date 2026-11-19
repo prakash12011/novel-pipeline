@@ -43,12 +43,13 @@ def timing(n, seed=0, lo=2.5, hi=9.0):
 
 
 @pytest.mark.parametrize("chars,shot,want", [
-    (1, "medium", "portrait"), (1, "wide", "portrait"), (1, "detail", "portrait"),
-    (1, "close-up", "tall"), (1, "low-angle", "tall"), (1, "high-angle", "tall"),
+    # only wide and landscape are on; portrait, tall and square are switched off (kept, commented, in the module)
+    (1, "medium", "landscape"), (1, "wide", "wide"), (1, "detail", "landscape"), (1, "close-up", "landscape"),
+    (1, "low-angle", "landscape"), (1, "high-angle", "landscape"),
     (2, "medium", "landscape"), (2, "close-up", "landscape"), (2, "over-the-shoulder", "wide"),
     (3, "medium", "wide"), (5, "close-up", "wide"),
     (0, "establishing", "wide"), (0, "wide", "wide"),
-    (0, "detail", "square"), (0, "medium", "square"), (0, "close-up", "square"),
+    (0, "detail", "landscape"), (0, "medium", "landscape"), (0, "close-up", "landscape"),
 ])
 def test_shape_rules(chars, shot, want):
     assert P.shape_for(scene(1, chars, shot)) == want
@@ -62,9 +63,15 @@ def test_shape_override_and_unknown():
     assert "7" in msg and all(s in msg for s in P.SHAPES)
 
 
+@pytest.mark.parametrize("old", ["portrait", "tall", "square"])
+def test_switched_off_shape_keys_are_drawn_as_landscape(old):
+    assert P.shape_for(scene(3, 1, "medium", panel=old)) == "landscape"
+
+
 def test_shapes_names_and_alternates():
-    assert set(P.SHAPES) == {"wide", "landscape", "square", "portrait", "tall"}
+    assert set(P.SHAPES) == {"wide", "landscape"}
     assert all(P.ALTERNATE[s] != s for s in P.SHAPES)
+    assert P.NARROW == ()
 
 
 @pytest.mark.parametrize("scenes", [
@@ -83,113 +90,109 @@ def test_shapes_no_two_neighbours_alike(scenes):
 
 
 def test_shapes_keep_overrides():
-    s = [scene(0, 1), scene(1, 1, panel="portrait"), scene(2, 1), scene(3, 1), scene(4, 1, panel="tall"),
+    s = [scene(0, 1), scene(1, 1, panel="landscape"), scene(2, 1), scene(3, 1), scene(4, 1, panel="wide"),
          scene(5, 1, "close-up")]
     names = P.shapes(s)
-    assert names[1] == "portrait" and names[4] == "tall"                # never swapped: the neighbour is
-    assert names == ["tall", "portrait", "tall", "portrait", "tall", "portrait"]
+    assert names[1] == "landscape" and names[4] == "wide"               # never swapped: the neighbour is
+    assert names == ["wide", "landscape", "wide", "landscape", "wide", "landscape"]
 
 
 # ------------------------------------------------------------------ layout
 
 
-def check_layout(names, within_limits=True):
+def check_layout(names):
+    """Sheets of up to PAGE_PANELS panels in rows of ROW_PANELS, every row stretched toward the sheet's width;
+    one picture left alone at the end is a full-screen sheet of its own (no border, no neighbours)."""
     lay = P.layout(names)
     panels, pages = lay["panels"], lay["pages"]
-    assert [p["k"] for p in panels] == list(range(len(names)))
-    assert [p["shape"] for p in panels] == lay["shapes"]
+    n = len(names)
+    assert [p["k"] for p in panels] == list(range(n))
+    full = [p for p in panels if p.get("full")]
+    assert len(full) <= 1 and all(p["k"] == n - 1 for p in full)        # only ever the very last picture
     for p in panels:
         assert all(isinstance(p[key], int) for key in ("x", "y", "w", "h", "row", "page"))
-        assert p["h"] == P.ROW_H and 0 < p["w"] <= P.MAX_PANEL_W
+        if p.get("full"):
+            assert (p["w"], p["h"]) == (R.W, R.H) and pages[p["page"]]["panels"] == [p["k"]]
+            assert (pages[p["page"]]["w"], pages[p["page"]]["h"]) == (R.W, R.H)
+        else:
+            assert p["shape"] == lay["shapes"][p["k"]]
+            assert p["h"] == P.ROW_H and 0 < p["w"] <= P.MAX_PANEL_W
     rows = {}
     for p in panels:
         rows.setdefault(p["row"], []).append(p)
-    last = max(rows)
     for r, ps in rows.items():
+        assert len(ps) <= P.ROW_PANELS
         for a, b in zip(ps, ps[1:]):                                   # reading order, one gutter apart
             assert b["x"] == a["x"] + a["w"] + P.GUTTER and b["y"] == a["y"]
-        width = sum(p["w"] for p in ps) + P.GUTTER * (len(ps) - 1)
-        if r != last:
-            assert width == P.ROW_W
-        else:
-            assert width <= P.ROW_W
-        if within_limits and (r != last or width == P.ROW_W):
-            for p in ps:
-                f = p["w"] / (P.SHAPES[p["shape"]] * P.ROW_H)
-                assert P.STRETCH_MIN - 0.002 <= f <= P.STRETCH_MAX + 0.002, (p, f)
     for i, a in enumerate(panels):                                     # no overlaps
         for b in panels[i + 1:]:
             assert (a["x"] + a["w"] <= b["x"] or b["x"] + b["w"] <= a["x"]
                     or a["y"] + a["h"] <= b["y"] or b["y"] + b["h"] <= a["y"])
-    for n, pg in enumerate(pages):                                     # panels sit inside their page
-        assert pg["panels"] == [p["k"] for p in panels if p["page"] == n]
-        assert pg["w"] == P.ROW_W + 2 * P.PAGE_MARGIN
-        assert pg["h"] == P.ROWS_PER_PAGE * P.ROW_H + (P.ROWS_PER_PAGE - 1) * P.ROW_GAP + 2 * P.PAGE_MARGIN
-        for k in pg["panels"]:
-            p = panels[k]
-            assert pg["x"] + P.PAGE_MARGIN <= p["x"] and p["x"] + p["w"] <= pg["x"] + pg["w"] - P.PAGE_MARGIN
-            assert p["y"] == pg["y"] + P.PAGE_MARGIN + (p["row"] % P.ROWS_PER_PAGE) * (P.ROW_H + P.ROW_GAP)
+    for k, pg in enumerate(pages):                                     # panels sit inside their sheet
+        assert pg["panels"] == [p["k"] for p in panels if p["page"] == k]
+        assert 1 <= len(pg["panels"]) <= P.PAGE_PANELS
+        assert pg["w"] >= R.W and pg["h"] >= R.H                        # never smaller than the screen
+        for q in pg["panels"]:
+            p = panels[q]
+            assert pg["x"] <= p["x"] and p["x"] + p["w"] <= pg["x"] + pg["w"]
+            assert pg["y"] <= p["y"] and p["y"] + p["h"] <= pg["y"] + pg["h"]
     for a, b in zip(pages, pages[1:]):                                 # separate sheets, edge to edge
         assert b["x"] >= a["x"] + a["w"]
-    assert {p["row"] // P.ROWS_PER_PAGE for p in panels} == set(range(len(pages)))
     return lay
 
 
 @pytest.mark.parametrize("names", [
-    ["wide"], ["portrait"], ["portrait", "tall"], ["wide", "landscape"], ["portrait", "tall", "portrait"],
-    ["wide", "tall", "landscape"],
+    ["wide"], ["landscape"], ["wide", "landscape"], ["wide", "landscape", "wide"],
+    ["wide", "landscape", "wide", "landscape"], ["landscape", "wide", "landscape", "wide", "landscape"],
 ])
 def test_layout_small(names):
     check_layout(names)
 
 
-def test_layout_singles_and_mixed():
-    check_layout(P.shapes([scene(i, 1, "medium" if i % 3 else "close-up") for i in range(45)]))
-    mixed = ["wide", "tall", "landscape", "portrait", "tall", "portrait", "tall", "portrait", "landscape",
-             "square", "portrait", "wide", "landscape", "tall", "portrait", "square", "wide"]
-    check_layout(mixed)
+def alternate(n):
+    return ["wide" if i % 2 else "landscape" for i in range(n)]
+
+
+@pytest.mark.parametrize("n,per_page,full", [
+    (1, [1], True), (2, [2], False), (3, [3], False), (4, [3, 1], True), (6, [6], False), (7, [6, 1], True),
+    (9, [6, 3], False), (10, [6, 3, 1], True), (13, [6, 6, 1], True), (45, [6] * 7 + [3], False),
+    (49, [6] * 8 + [1], True),
+])
+def test_layout_six_to_a_sheet_and_a_lone_last_picture_full_screen(n, per_page, full):
+    lay = check_layout(alternate(n))
+    assert [len(pg["panels"]) for pg in lay["pages"]] == per_page
+    assert bool([p for p in lay["panels"] if p.get("full")]) is full
+
+
+def test_layout_rows_of_three_and_stretched_to_the_sheet():
+    lay = check_layout(alternate(12))
+    for pg in lay["pages"]:
+        rows = {}
+        for k in pg["panels"]:
+            rows.setdefault(lay["panels"][k]["row"], []).append(lay["panels"][k])
+        assert [len(r) for r in rows.values()] == [3, 3]
+        edge = [max(p["x"] + p["w"] for p in r) - pg["x"] for r in rows.values()]
+        assert abs(edge[0] - edge[1]) <= 3                              # both rows end at the same place
+
+
+def test_layout_is_the_same_every_time_and_varies_between_chapters():
+    a = P.layout(alternate(30))
+    assert P.layout(alternate(30)) == a
+    assert P.layout(alternate(31)) != a
 
 
 @pytest.mark.parametrize("seed", range(6))
 def test_layout_random_chapters(seed):
-    # Some runs (landscape, tall, landscape) have no row break inside the stretch limits: rows still
-    # fill exactly, and go only a little past a limit.
-    lay = check_layout(P.shapes(random_scenes(45, seed)), within_limits=False)
+    lay = check_layout(P.shapes(random_scenes(45, seed)))
     for p in lay["panels"]:
-        f = p["w"] / (P.SHAPES[p["shape"]] * P.ROW_H)
-        assert 0.7 <= f <= 1.3
+        assert 1.2 <= p["w"] / p["h"] <= 1.9 or p.get("full")          # between landscape and wide
 
 
-@pytest.mark.parametrize("scenes", [
-    [scene(i, 1, "medium") for i in range(45)],                 # every picture a lone character
-    [scene(i, 1, "medium" if i % 4 else "close-up") for i in range(30)],
-    random_scenes(45, 4), random_scenes(45, 5),
-])
-def test_layout_at_most_two_portraits_per_page(scenes):
-    lay = check_layout(P.shapes(scenes), within_limits=False)
-    for pg in lay["pages"]:
-        on_page = [p for p in lay["panels"] if p["page"] == lay["pages"].index(pg)]
-        assert sum(p["shape"] in P.NARROW for p in on_page) <= P.MAX_PORTRAIT_PER_PAGE
-    names = lay["shapes"]
-    assert all(a != b for a, b in zip(names, names[1:]))
-
-
-def test_layout_portrait_cap_keeps_fixed_panels():
-    scenes = [scene(i, 1, "medium") for i in range(6)]
-    scenes[0]["panel"] = "portrait"                             # fixed by the scene: never changed
-    lay = P.layout(["portrait"] * 6, fixed=[True, False, False, False, False, False])
-    assert lay["shapes"][0] == "portrait"
-    for n in range(len(lay["pages"])):                          # the fixed one counts toward the cap
-        assert sum(p["shape"] in P.NARROW for p in lay["panels"] if p["page"] == n) <= P.MAX_PORTRAIT_PER_PAGE
-    assert [p["shape"] for p in lay["panels"]] == lay["shapes"]
-
-
-def test_layout_wide_beside_narrow_fills_row():
-    # One factor would push the wide panel past MAX_PANEL_W: it stops there and the tall one takes the rest.
-    lay = check_layout(["wide", "tall", "landscape", "portrait", "tall"])
-    row0 = [p for p in lay["panels"] if p["row"] == 0]
-    assert [p["shape"] for p in row0] == ["wide", "tall"]
-    assert row0[0]["w"] <= P.MAX_PANEL_W
+def test_panels_are_95_percent_of_the_screen_and_the_next_one_peeks_in():
+    lay = P.layout(alternate(12))
+    assert lay["panels"][0]["h"] / R.H >= 0.94
+    assert P.MAX_PANEL_W / R.W >= 0.94
+    assert P.GUTTER <= 30 and P.ROW_GAP < (R.H - P.ROW_H) / 2 + 1       # a row or a panel next door shows a sliver
 
 
 # ------------------------------------------------------------------ plan
@@ -301,30 +304,25 @@ def test_inner_window_stays_inside(seed):
         for q in (0.0, 0.5, 1.0):
             assert window_inside(p, q), (p, q)
         assert mv["z"][0] == 1.0 and 1.0 <= mv["z"][1] <= max(P.ZMAX, P.NARROW_ZMAX)   # opens unzoomed, zooms in only
-    assert {"push", "pan_right", "pan_left", "slide_right", "slide_left", "zoom_in"} <= kinds
+    assert {"push", "pan_right", "pan_left"} <= kinds                   # no upright panels: the narrow moves are idle
 
 
 def test_narrow_slide_sweeps_across():
+    # The narrow moves are idle (no portrait or tall panels now) but kept: _move still sweeps an upright panel.
     # A lone character in a long window: the window sweeps the whole picture, whatever focus says.
-    scenes = [scene(1, 1, "medium", (0.5, 0.45)), scene(2, 2, "medium")]
-    pl = P.plan([0.0, 9.0], 15.0, scenes)
-    p = pl["panels"][0]
-    assert p["shape"] == "portrait" and p["move"]["kind"] == "slide_right"
-    bw, _ = P._base_window(p["w"] / p["h"], P.PICTURE_ASPECT)
-    (x0, _), (x1, _) = p["move"]["c"]
-    assert p["move"]["z"] == [1.0, 1.0]
+    w, h = round(P.ROW_H * 3 / 4), P.ROW_H
+    mv = P._move("slide_right", w / h, w, (0.5, 0.45), 0.0, 9.0)
+    bw, _ = P._base_window(w / h, P.PICTURE_ASPECT)
+    (x0, _), (x1, _) = mv["c"]
+    assert mv["z"] == [1.0, 1.0]
     assert x0 == pytest.approx(bw / 2) and x1 == pytest.approx(1 - bw / 2)
     # A short one: travel limited by MAX_SLIDE_SPEED and centred on focus x.
-    pl = P.plan([0.0, 2.5], 8.0, [scene(1, 1, "medium", (0.53, 0.5)), scene(2, 2)])
-    p = pl["panels"][0]
-    bw, _ = P._base_window(p["w"] / p["h"], P.PICTURE_ASPECT)
-    (x0, _), (x1, _) = p["move"]["c"]
-    d = p["move"]["t1"] - p["move"]["t0"]
-    assert (x1 - x0) * p["w"] / bw == pytest.approx(P.MAX_SLIDE_SPEED * d, rel=1e-6)
+    mv = P._move("slide_right", w / h, w, (0.53, 0.5), 0.0, 2.5)
+    (x0, _), (x1, _) = mv["c"]
+    assert (x1 - x0) * w / bw == pytest.approx(P.MAX_SLIDE_SPEED * 2.5, rel=1e-6)
     assert (x0 + x1) / 2 == pytest.approx(0.53)
     # Focus near the edge: the same travel, pushed back inside the picture.
-    pl = P.plan([0.0, 2.5], 8.0, [scene(1, 1, "medium", (0.95, 0.5)), scene(2, 2)])
-    (x0, _), (x1, _) = pl["panels"][0]["move"]["c"]
+    (x0, _), (x1, _) = P._move("slide_right", w / h, w, (0.95, 0.5), 0.0, 2.5)["c"]
     assert x1 == pytest.approx(1 - bw / 2) and x0 > bw / 2
 
 
@@ -369,7 +367,7 @@ def test_frame_hold(chapter):
     assert tuple(px(im, gx, R.H / 2)) == (0xf3, 0xf0, 0xe8)
     centre = px(im, a["cx"] - ox, R.H / 2)                             # the active panel: not faded
     assert np.abs(centre - COLOURS[0]).max() <= 8
-    inside_b = px(im, b["x"] + b["w"] / 2 - ox, R.H / 2)               # the neighbour: faded toward paper
+    inside_b = px(im, b["x"] + 30 - ox, R.H / 2)                       # the neighbour (its left part is on screen): faded
     want = np.array(COLOURS[1]) * (1 - 0.45) + np.array([0xf3, 0xf0, 0xe8]) * 0.45
     assert np.abs(inside_b - want).max() <= 8
     border = px(im, a["x"] + 1 - ox, R.H / 2)
